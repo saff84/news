@@ -1,0 +1,125 @@
+services:
+  db:
+    image: postgres:16
+    environment:
+      POSTGRES_DB: newsint
+      POSTGRES_USER: newsint
+      POSTGRES_PASSWORD: newsint
+    ports:
+      - "5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U newsint -d newsint"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+
+  redis:
+    image: redis:7
+    ports:
+      - "6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 30
+
+  backend:
+    build:
+      context: ./backend
+    environment:
+      APP_ENV: dev
+      DATABASE_URL: postgresql+psycopg://newsint:newsint@db:5432/newsint
+      REDIS_URL: redis://redis:6379/0
+      SECRET_KEY: "dev-change-me"
+      ACCESS_TOKEN_TTL_MIN: "30"
+      REFRESH_TOKEN_TTL_DAYS: "14"
+      CORS_ORIGINS: "http://localhost:5173"
+      STORAGE_DIR: "/data/storage"
+      PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD: "1"
+    ports:
+      - "8000:8000"
+    volumes:
+      - storage:/data/storage
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+
+  worker:
+    build:
+      context: ./backend
+    environment:
+      APP_ENV: dev
+      DATABASE_URL: postgresql+psycopg://newsint:newsint@db:5432/newsint
+      REDIS_URL: redis://redis:6379/0
+      SECRET_KEY: "dev-change-me"
+      STORAGE_DIR: "/data/storage"
+      TELEGRAM_SESSION_DIR: "/data/tg"
+    # NOTE: use $$ to escape Compose variable interpolation; let shell expand inside container
+    command: ["sh", "-lc", "alembic upgrade head && rq worker -u $$REDIS_URL default"]
+    volumes:
+      - storage:/data/storage
+      - tgdata:/data/tg
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+
+  tg-auth:
+    build:
+      context: ./backend
+    environment:
+      APP_ENV: dev
+      DATABASE_URL: postgresql+psycopg://newsint:newsint@db:5432/newsint
+      REDIS_URL: redis://redis:6379/0
+      SECRET_KEY: "dev-change-me"
+      STORAGE_DIR: "/data/storage"
+      TELEGRAM_SESSION_DIR: "/data/tg"
+      TELEGRAM_API_ID: ${TELEGRAM_API_ID:-}
+      TELEGRAM_API_HASH: ${TELEGRAM_API_HASH:-}
+      TELEGRAM_PHONE: ${TELEGRAM_PHONE:-}
+    command: ["sh", "-lc", "python -m app.parsers.telegram_auth"]
+    volumes:
+      - tgdata:/data/tg
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+
+  scheduler:
+    build:
+      context: ./backend
+    environment:
+      APP_ENV: dev
+      DATABASE_URL: postgresql+psycopg://newsint:newsint@db:5432/newsint
+      REDIS_URL: redis://redis:6379/0
+      SECRET_KEY: "dev-change-me"
+      STORAGE_DIR: "/data/storage"
+    command: ["sh", "-lc", "alembic upgrade head && python -m app.workers.scheduler"]
+    volumes:
+      - storage:/data/storage
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+
+  frontend:
+    build:
+      context: ./frontend
+    environment:
+      VITE_API_BASE_URL: "http://localhost:8000"
+    ports:
+      - "5173:5173"
+    depends_on:
+      - backend
+
+volumes:
+  pgdata:
+  storage:
+  tgdata:
