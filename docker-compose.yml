@@ -25,6 +25,37 @@ services:
       timeout: 3s
       retries: 30
 
+  migrate:
+    build:
+      context: ./backend
+    environment:
+      APP_ENV: dev
+      DATABASE_URL: postgresql+psycopg://newsint:newsint@db:5432/newsint
+      REDIS_URL: redis://redis:6379/0
+      SECRET_KEY: "dev-change-me"
+      STORAGE_DIR: "/data/storage"
+      PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD: "1"
+      TELEGRAM_SESSION_DIR: "/data/tg"
+      TELEGRAM_API_ID: ${TELEGRAM_API_ID:-}
+      TELEGRAM_API_HASH: ${TELEGRAM_API_HASH:-}
+      TELEGRAM_PHONE: ${TELEGRAM_PHONE:-}
+      TELEGRAM_SESSION_STRING: ${TELEGRAM_SESSION_STRING:-}
+      MAX_API_BASE: ${MAX_API_BASE:-https://platform-api.max.ru}
+      MAX_BOT_TOKEN: ${MAX_BOT_TOKEN:-}
+      VK_API_BASE: ${VK_API_BASE:-https://api.vk.com/method}
+      VK_API_VERSION: ${VK_API_VERSION:-5.199}
+      VK_ACCESS_TOKEN: ${VK_ACCESS_TOKEN:-}
+    command: ["sh", "-lc", "alembic upgrade head"]
+    volumes:
+      - storage:/data/storage
+      - tgdata:/data/tg
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    restart: "no"
+
   backend:
     build:
       context: ./backend
@@ -58,6 +89,8 @@ services:
         condition: service_healthy
       redis:
         condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
 
   worker:
     build:
@@ -79,7 +112,7 @@ services:
       VK_API_VERSION: ${VK_API_VERSION:-5.199}
       VK_ACCESS_TOKEN: ${VK_ACCESS_TOKEN:-}
     # NOTE: use $$ to escape Compose variable interpolation; let shell expand inside container
-    command: ["sh", "-lc", "alembic upgrade head && rq worker -u $$REDIS_URL default"]
+    command: ["sh", "-lc", "rq worker -u $$REDIS_URL default"]
     volumes:
       - storage:/data/storage
       - tgdata:/data/tg
@@ -88,6 +121,8 @@ services:
         condition: service_healthy
       redis:
         condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
 
   tg-auth:
     profiles:
@@ -127,7 +162,7 @@ services:
       REDIS_URL: redis://redis:6379/0
       SECRET_KEY: "dev-change-me"
       STORAGE_DIR: "/data/storage"
-    command: ["sh", "-lc", "alembic upgrade head && python -m app.workers.scheduler"]
+    command: ["sh", "-lc", "python -m app.workers.scheduler"]
     volumes:
       - storage:/data/storage
     depends_on:
@@ -135,6 +170,8 @@ services:
         condition: service_healthy
       redis:
         condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
 
   frontend:
     build:
@@ -144,7 +181,8 @@ services:
     ports:
       - "5173:5173"
     depends_on:
-      - backend
+      backend:
+        condition: service_started
 
 volumes:
   pgdata:
