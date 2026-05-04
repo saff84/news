@@ -37,6 +37,17 @@ export type CompetitorOut = {
   updated_at: string;
 };
 
+export type DeveloperOut = {
+  id: string;
+  name: string;
+  aliases: string[];
+  tags: string[];
+  region_ids: string[];
+  is_active: boolean;
+  created_at: string;
+  updated_at: string;
+};
+
 export type ParsingTemplateOut = {
   id: string;
   name: string;
@@ -56,6 +67,7 @@ export type SourceOut = {
   tg_channel_username?: string | null;
   region_tags: string[];
   competitor_id?: string | null;
+  developer_id?: string | null;
   enabled: boolean;
   fetch_frequency_min: number;
   priority: number;
@@ -91,12 +103,34 @@ export type SourceHealthOut = {
   backoff_until?: string | null;
 };
 
+export type SourceCrawlScheduleOut = {
+  id: string;
+  source_type: string;
+  name: string | null;
+  display_label: string;
+  enabled: boolean;
+  fetch_frequency_min: number;
+  last_fetch_at: string | null;
+  last_success_at: string | null;
+  backoff_until: string | null;
+  is_due: boolean;
+  next_expected_enqueue_at: string | null;
+};
+
+export type SourceCrawlScheduleListOut = {
+  server_now: string;
+  items: SourceCrawlScheduleOut[];
+  due_count: number;
+};
+
 export type DiagnosticsOverviewOut = {
   now: string;
   db_ok: boolean;
   redis_ok: boolean;
   rq_default_queue_count: number;
   alembic_version?: string | null;
+  alert_critical_count: number;
+  alert_warning_count: number;
 };
 
 export type IndicatorLatestOut = {
@@ -120,6 +154,17 @@ export type IndicatorHistoryOut = {
   items: IndicatorPointOut[];
 };
 
+export type ParsedIndicatorOut = {
+  id: string;
+  indicator_name: string;
+  period: string;
+  value: number;
+  change_pct: number | null;
+  unit: string | null;
+  source_name: string | null;
+  created_at: string;
+};
+
 export type NewsItemOut = {
   id: string;
   source_id: string | null;
@@ -135,8 +180,47 @@ export type NewsItemOut = {
   region_ids: string[];
   topic_tags: string[];
   competitor_mentions: string[];
+  competitor_mentions_names: string[];
+  developer_mentions: string[];
+  developer_mentions_names: string[];
   created_at: string;
   updated_at: string;
+};
+
+export type MaxParserStatusOut = {
+  token_configured: boolean;
+  token_source: string;
+  api_base: string;
+  token_valid: boolean | null;
+  bot_info?: any;
+  verify_error?: string | null;
+};
+
+export type VkParserStatusOut = {
+  token_configured: boolean;
+  token_source: string;
+  api_base: string;
+  api_version: string;
+  token_valid: boolean | null;
+  verify_error?: string | null;
+};
+
+export type MonitoringAlertOut = {
+  id: string;
+  severity: "info" | "warning" | "critical";
+  code: string;
+  message: string;
+  source_id?: string | null;
+  source_label?: string | null;
+  meta: Record<string, unknown>;
+};
+
+export type MonitoringAlertsOut = {
+  generated_at: string;
+  critical_count: number;
+  warning_count: number;
+  info_count: number;
+  items: MonitoringAlertOut[];
 };
 
 /** Handler for 401: tries refresh, returns new access token or null. Set by AuthProvider. */
@@ -162,16 +246,29 @@ async function request<T>(path: string, init: RequestInit = {}, accessToken?: st
     }
     // Extract error message
     const ct = (res.headers.get("content-type") || "").toLowerCase();
+    let errMsg: string | null = null;
     if (ct.includes("application/json")) {
       try {
         const j: any = await res.json();
         const detail = j?.detail;
-        if (typeof detail === "string") throw new Error(detail);
-        throw new Error(JSON.stringify(j));
+        if (typeof detail === "string") {
+          errMsg = detail;
+        } else if (Array.isArray(detail) && detail.length > 0) {
+          // FastAPI 422: detail is array of { loc, msg, type }
+          const parts = detail.map((e: { loc?: string[]; msg?: string }) => {
+            const field = Array.isArray(e.loc) ? e.loc.filter((x) => x !== "body").pop() : null;
+            const msg = e?.msg || "Validation error";
+            return field ? `${field}: ${msg}` : msg;
+          });
+          errMsg = parts.join("; ");
+        } else {
+          errMsg = JSON.stringify(j);
+        }
       } catch {
         // JSON parse failed, fall through to text
       }
     }
+    if (errMsg) throw new Error(errMsg);
     const text = await res.text().catch(() => "");
     throw new Error(text || `HTTP ${res.status}`);
   }
@@ -193,10 +290,11 @@ export const api = {
       }),
   },
   news: {
-    list: (accessToken: string, params?: { q?: string; source_id?: string; offset?: number; limit?: number }) => {
+    list: (accessToken: string, params?: { q?: string; source_id?: string; competitor_id?: string; offset?: number; limit?: number }) => {
       const sp = new URLSearchParams();
       if (params?.q) sp.set("q", params.q);
       if (params?.source_id) sp.set("source_id", params.source_id);
+      if (params?.competitor_id) sp.set("competitor_id", params.competitor_id);
       if (params?.offset != null) sp.set("offset", String(params.offset));
       if (params?.limit != null) sp.set("limit", String(params.limit));
       const qs = sp.toString() ? `?${sp.toString()}` : "";
@@ -228,6 +326,18 @@ export const api = {
       request<CompetitorOut>(`/api/competitors/${id}`, { method: "PATCH", body: JSON.stringify(payload) }, accessToken),
     delete: (accessToken: string, id: string) =>
       request<void>(`/api/competitors/${id}`, { method: "DELETE" }, accessToken),
+  },
+  developers: {
+    list: (accessToken: string, q?: string) => {
+      const qs = q ? `?q=${encodeURIComponent(q)}` : "";
+      return request<{ items: DeveloperOut[]; total: number }>(`/api/developers${qs}`, { method: "GET" }, accessToken);
+    },
+    create: (accessToken: string, payload: Partial<DeveloperOut>) =>
+      request<DeveloperOut>("/api/developers", { method: "POST", body: JSON.stringify(payload) }, accessToken),
+    update: (accessToken: string, id: string, payload: Partial<DeveloperOut>) =>
+      request<DeveloperOut>(`/api/developers/${id}`, { method: "PATCH", body: JSON.stringify(payload) }, accessToken),
+    delete: (accessToken: string, id: string) =>
+      request<void>(`/api/developers/${id}`, { method: "DELETE" }, accessToken),
   },
   parsingTemplates: {
     list: (accessToken: string, q?: string) => {
@@ -274,31 +384,151 @@ export const api = {
       const qs = only_failed ? "?only_failed=true" : "";
       return request<{ items: SourceHealthOut[]; total: number }>(`/api/monitoring/sources${qs}`, { method: "GET" }, accessToken);
     },
+    crawlSchedule: (accessToken: string, includeDisabled?: boolean) => {
+      const qs = includeDisabled ? "?include_disabled=true" : "";
+      return request<SourceCrawlScheduleListOut>(`/api/monitoring/crawl-schedule${qs}`, { method: "GET" }, accessToken);
+    },
+    enqueueDue: (accessToken: string, batchLimit?: number) => {
+      const sp = new URLSearchParams();
+      if (batchLimit != null) sp.set("batch_limit", String(batchLimit));
+      const qs = sp.toString() ? `?${sp.toString()}` : "";
+      return request<{ enqueued: number }>(`/api/monitoring/enqueue-due${qs}`, { method: "POST" }, accessToken);
+    },
+    alerts: (accessToken: string, params?: { include_disabled?: boolean; limit?: number }) => {
+      const sp = new URLSearchParams();
+      if (params?.include_disabled) sp.set("include_disabled", "true");
+      if (params?.limit != null) sp.set("limit", String(params.limit));
+      const qs = sp.toString() ? `?${sp.toString()}` : "";
+      return request<MonitoringAlertsOut>(`/api/monitoring/alerts${qs}`, { method: "GET" }, accessToken);
+    },
+  },
+  telegramParser: {
+    status: (accessToken: string) =>
+      request<{
+        credentials_configured: boolean;
+        session_string_used: boolean;
+        session_dir: string;
+        session_file_exists: boolean;
+        session_authorized: boolean | null;
+        verify_error?: string | null;
+        config_source?: string;
+      }>("/api/telegram-parser/status", { method: "GET" }, accessToken),
+    config: (accessToken: string) =>
+      request<{ api_id_set: boolean; api_hash_set: boolean; session_string_set: boolean; config_source: string }>(
+        "/api/telegram-parser/config",
+        { method: "GET" },
+        accessToken,
+      ),
+    updateConfig: (
+      accessToken: string,
+      payload: { api_id?: number | null; api_hash?: string | null; session_string?: string | null },
+    ) =>
+      request<{ api_id_set: boolean; api_hash_set: boolean; session_string_set: boolean; config_source: string }>(
+        "/api/telegram-parser/config",
+        { method: "PUT", body: JSON.stringify(payload) },
+        accessToken,
+      ),
+    qrStart: (accessToken: string, api_id: number, api_hash: string) =>
+      request<{ poll_id: string; qr_url: string; session_string?: string | null }>("/api/telegram-parser/qr-start", {
+        method: "POST",
+        body: JSON.stringify({ api_id, api_hash }),
+      }, accessToken),
+    qrPoll: (accessToken: string, pollId: string) =>
+      request<{ status: string; session_string?: string | null; error?: string | null }>(
+        `/api/telegram-parser/qr-poll/${pollId}`,
+        { method: "GET" },
+        accessToken,
+      ),
+    qr2fa: (accessToken: string, pollId: string, password: string) =>
+      request<{ status: string; session_string?: string | null; error?: string | null }>(
+        "/api/telegram-parser/qr-2fa",
+        { method: "POST", body: JSON.stringify({ poll_id: pollId, password }) },
+        accessToken,
+      ),
+  },
+  maxParser: {
+    status: (accessToken: string) => request<MaxParserStatusOut>("/api/max-parser/status", { method: "GET" }, accessToken),
+    config: (accessToken: string) =>
+      request<{ bot_token_set: boolean; token_source: string }>("/api/max-parser/config", { method: "GET" }, accessToken),
+    updateConfig: (accessToken: string, payload: { bot_token?: string | null }) =>
+      request<{ bot_token_set: boolean; token_source: string }>(
+        "/api/max-parser/config",
+        { method: "PUT", body: JSON.stringify(payload) },
+        accessToken,
+      ),
+    testBot: (accessToken: string, token: string) =>
+      request<{ ok: boolean; bot_info?: any; error?: string | null }>(
+        "/api/max-parser/test-bot",
+        { method: "POST", body: JSON.stringify({ token }) },
+        accessToken,
+      ),
+    testFetch: (accessToken: string, payload: { channel_id: string; limit?: number }) =>
+      request<{ fetched: number; sample: Array<{ id?: string; text?: string; date?: string }> }>(
+        "/api/max-parser/test-fetch",
+        { method: "POST", body: JSON.stringify(payload) },
+        accessToken,
+      ),
+  },
+  vkParser: {
+    status: (accessToken: string) => request<VkParserStatusOut>("/api/vk-parser/status", { method: "GET" }, accessToken),
+    config: (accessToken: string) =>
+      request<{ access_token_set: boolean; token_source: string }>("/api/vk-parser/config", { method: "GET" }, accessToken),
+    updateConfig: (accessToken: string, payload: { access_token?: string | null }) =>
+      request<{ access_token_set: boolean; token_source: string }>(
+        "/api/vk-parser/config",
+        { method: "PUT", body: JSON.stringify(payload) },
+        accessToken,
+      ),
+    testToken: (accessToken: string, token: string) =>
+      request<{ ok: boolean; error?: string | null }>(
+        "/api/vk-parser/test-token",
+        { method: "POST", body: JSON.stringify({ token }) },
+        accessToken,
+      ),
+    testFetch: (accessToken: string, payload: { group_id: string; limit?: number }) =>
+      request<{ fetched: number; sample: Array<{ id?: string; text?: string; date?: string; url?: string | null }> }>(
+        "/api/vk-parser/test-fetch",
+        { method: "POST", body: JSON.stringify(payload) },
+        accessToken,
+      ),
   },
   diagnostics: {
     overview: (accessToken: string) => request<DiagnosticsOverviewOut>("/api/diagnostics/overview", { method: "GET" }, accessToken),
     runSourceNow: (accessToken: string, sourceId: string) =>
       request<{ job_id: string }>(`/api/diagnostics/sources/${sourceId}/run-now`, { method: "POST" }, accessToken),
+    rebuildNewsClusters: (accessToken: string) =>
+      request<{ job_id: string }>("/api/diagnostics/rebuild-news-clusters", { method: "POST" }, accessToken),
     jobStatus: (accessToken: string, jobId: string) =>
       request<{ job_id: string; status: string; result?: any; exc_info?: string | null }>(`/api/diagnostics/jobs/${jobId}`, { method: "GET" }, accessToken),
   },
   indicators: {
     cnyRubLatest: (accessToken: string) =>
       request<IndicatorLatestOut>("/api/indicators/cny-rub/latest", { method: "GET" }, accessToken),
-    parseDocument: async (accessToken: string, file: File) => {
+    parseDocument: (async function parseDoc(accessToken: string, file: File, isRetry = false) {
       const form = new FormData();
       form.append("file", file);
-      const res = await fetch(`${import.meta.env.VITE_API_BASE_URL || "http://localhost:8000"}/api/indicators/parse-document`, {
+      const res = await fetch(`${API_BASE}/api/indicators/parse-document`, {
         method: "POST",
         headers: { Authorization: `Bearer ${accessToken}` },
         body: form,
       });
       if (!res.ok) {
+        if (res.status === 401 && accessToken && authRefreshHandler && !isRetry) {
+          const newToken = await authRefreshHandler();
+          if (newToken) return parseDoc(newToken, file, true);
+        }
         const j = await res.json().catch(() => ({}));
-        throw new Error(j?.detail || res.statusText);
+        const detail = j?.detail;
+        const msg =
+          typeof detail === "string"
+            ? detail
+            : Array.isArray(detail) && detail.length > 0
+              ? (detail[0] as { msg?: string })?.msg || JSON.stringify(detail)
+              : res.statusText;
+        throw new Error(msg);
       }
       return res.json() as Promise<Array<{ indicator_name: string; period: string; value: number; change_pct?: number | null; unit?: string | null }>>;
-    },
+    }) as (accessToken: string, file: File) => Promise<Array<{ indicator_name: string; period: string; value: number; change_pct?: number | null; unit?: string | null }>>,
     importParsed: (accessToken: string, payload: { rows: Array<{ indicator_name: string; period: string; value: number; change_pct?: number | null; unit?: string | null }>; source_name?: string | null }) =>
       request<{ inserted: number; batch_id: string }>("/api/indicators/import-parsed", { method: "POST", body: JSON.stringify(payload) }, accessToken),
     cnyRubHistory: (accessToken: string, days: number = 30) =>
@@ -309,6 +539,189 @@ export const api = {
         { method: "POST" },
         accessToken,
       ),
+    parsedNames: (accessToken: string) =>
+      request<string[]>("/api/indicators/parsed/names", { method: "GET" }, accessToken),
+    parsedList: (accessToken: string, indicatorName?: string) =>
+      request<{ items: ParsedIndicatorOut[]; total: number }>(
+        `/api/indicators/parsed${indicatorName ? `?indicator_name=${encodeURIComponent(indicatorName)}` : ""}`,
+        { method: "GET" },
+        accessToken,
+      ),
+    parsedHistory: (accessToken: string, indicatorName: string) =>
+      request<{ indicator_name: string; items: Array<{ period: string; value: number; unit?: string | null }> }>(
+        `/api/indicators/parsed/history?indicator_name=${encodeURIComponent(indicatorName)}`,
+        { method: "GET" },
+        accessToken,
+      ),
+    parsedCreate: (accessToken: string, payload: { indicator_name: string; period: string; value: number; change_pct?: number | null; unit?: string | null; source_name?: string | null }) =>
+      request<ParsedIndicatorOut>("/api/indicators/parsed/single", { method: "POST", body: JSON.stringify(payload) }, accessToken),
+    parsedUpdate: (accessToken: string, id: string, payload: Partial<{ indicator_name: string; period: string; value: number; change_pct?: number | null; unit?: string | null; source_name?: string | null }>) =>
+      request<ParsedIndicatorOut>(`/api/indicators/parsed/${id}`, { method: "PATCH", body: JSON.stringify(payload) }, accessToken),
+    parsedDelete: (accessToken: string, id: string) =>
+      request<void>(`/api/indicators/parsed/${id}`, { method: "DELETE" }, accessToken),
+  },
+  reportConfig: {
+    get: (accessToken: string) =>
+      request<{
+        title: string;
+        subtitle: string;
+        company_name: string;
+        company_address: string;
+        footer_text: string;
+        include_news: boolean;
+        include_indicators: boolean;
+        include_regions: boolean;
+        date_range_days: number;
+        report_month: string | null;
+      }>("/api/report-config", { method: "GET" }, accessToken),
+    update: (
+      accessToken: string,
+      payload: Partial<{
+        title: string;
+        subtitle: string;
+        company_name: string;
+        company_address: string;
+        footer_text: string;
+        include_news: boolean;
+        include_indicators: boolean;
+        include_regions: boolean;
+        date_range_days: number;
+        report_month: string | null;
+      }>,
+    ) =>
+      request<{
+        title: string;
+        subtitle: string;
+        company_name: string;
+        company_address: string;
+        footer_text: string;
+        include_news: boolean;
+        include_indicators: boolean;
+        include_regions: boolean;
+        date_range_days: number;
+        report_month: string | null;
+      }>("/api/report-config", { method: "PUT", body: JSON.stringify(payload) }, accessToken),
+  },
+  aiConfig: {
+    get: (accessToken: string) =>
+      request<{
+        provider: string;
+        api_key_set: boolean;
+        model: string;
+        prompt_news: string;
+        prompt_competitors: string;
+        prompt_developers: string;
+        prompt_indicators: string;
+        prompt_regions: string;
+        prompt_clusters: string;
+      }>("/api/ai-config", { method: "GET" }, accessToken),
+    update: (
+      accessToken: string,
+      payload: Partial<{
+        provider: string;
+        api_key: string;
+        model: string;
+        prompt_news: string;
+        prompt_competitors: string;
+        prompt_developers: string;
+        prompt_indicators: string;
+        prompt_regions: string;
+        prompt_clusters: string;
+      }>,
+    ) =>
+      request<{
+        provider: string;
+        api_key_set: boolean;
+        model: string;
+        prompt_news: string;
+        prompt_competitors: string;
+        prompt_developers: string;
+        prompt_indicators: string;
+        prompt_regions: string;
+        prompt_clusters: string;
+      }>("/api/ai-config", { method: "PUT", body: JSON.stringify(payload) }, accessToken),
+  },
+  reports: {
+    generate: (
+      accessToken: string,
+      params?: { date_from?: string; date_to?: string; date_range_days?: number; report_month?: string },
+    ) =>
+      request<{
+        report_config: { title: string; subtitle: string; company_name: string; company_address: string; footer_text: string };
+        period: { date_from: string; date_to: string };
+        processed_news: string | null;
+        processed_competitors: string | null;
+        processed_indicators: string | null;
+        processed_regions: string | null;
+        processed_clusters: string | null;
+        processed_news_json: Record<string, unknown> | null;
+        processed_indicators_json: Record<string, unknown> | null;
+        processed_clusters_json: Record<string, unknown> | null;
+        processed_competitors_by_name: Record<string, string>;
+        processed_developers_by_name: Record<string, string>;
+        processed_regions_by_name: Record<string, string>;
+        processed_competitors_by_name_json: Record<string, Record<string, unknown>>;
+        processed_developers_by_name_json: Record<string, Record<string, unknown>>;
+        processed_regions_by_name_json: Record<string, Record<string, unknown>>;
+      }>("/api/reports/generate", {
+        method: "POST",
+        body: JSON.stringify(params || {}),
+      }, accessToken),
+    generatePdf: async (
+      accessToken: string,
+      params?: {
+        date_from?: string;
+        date_to?: string;
+        date_range_days?: number;
+        report_month?: string;
+        processed_indicators?: string | null;
+        processed_news?: string | null;
+        processed_competitors?: string | null;
+        processed_regions?: string | null;
+        processed_clusters?: string | null;
+        processed_news_json?: Record<string, unknown> | null;
+        processed_indicators_json?: Record<string, unknown> | null;
+        processed_clusters_json?: Record<string, unknown> | null;
+        processed_competitors_by_name?: Record<string, string>;
+        processed_developers_by_name?: Record<string, string>;
+        processed_regions_by_name?: Record<string, string>;
+        processed_competitors_by_name_json?: Record<string, Record<string, unknown>>;
+        processed_developers_by_name_json?: Record<string, Record<string, unknown>>;
+        processed_regions_by_name_json?: Record<string, Record<string, unknown>>;
+      },
+    ): Promise<Blob> => {
+      const res = await fetch(`${API_BASE}/api/reports/generate-pdf`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${accessToken}`,
+        },
+        body: JSON.stringify(params || {}),
+      });
+      if (!res.ok) {
+        const text = await res.text();
+        throw new Error(text || `HTTP ${res.status}`);
+      }
+      return res.blob();
+    },
+    generateHtml: async (
+      accessToken: string,
+      params?: { date_from?: string; date_to?: string; date_range_days?: number; report_month?: string },
+    ): Promise<Blob> => {
+      const res = await fetch(`${API_BASE}/api/reports/generate-html`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${accessToken}`,
+        },
+        body: JSON.stringify(params || {}),
+      });
+      if (!res.ok) {
+        const text = await res.text();
+        throw new Error(text || `HTTP ${res.status}`);
+      }
+      return res.blob();
+    },
   },
 };
 

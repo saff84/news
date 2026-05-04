@@ -11,6 +11,8 @@ class DiagnosticsOverviewOut(BaseModel):
     redis_ok: bool
     rq_default_queue_count: int
     alembic_version: str | None
+    alert_critical_count: int = 0
+    alert_warning_count: int = 0
 
 
 class EnqueueRunOut(BaseModel):

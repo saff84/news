@@ -8,18 +8,23 @@ from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.orm import Session
 from telethon import TelegramClient
 from telethon.errors import FloodWaitError
+from telethon.sessions import StringSession
 
 from app.core.settings import settings
 from app.models.domain import NewsItem, Source, TgChannelState
+from app.services.telegram_config import get_telegram_config
 from app.parsers.keyword_filter import should_keep_item
-from app.parsers.normalize import canonicalize_url, normalize_text, sha256_hex, simhash64
+from app.parsers.normalize import canonicalize_url, normalize_text, period_month_from_dt, sha256_hex, simhash64
 from app.tagging.rules import tag_item
 
 
-def _ensure_tg_config() -> None:
-    if not settings.telegram_api_id or not settings.telegram_api_hash or not settings.telegram_phone:
+def _ensure_tg_config(cfg: dict) -> None:
+    has_api = bool(cfg.get("api_id") and cfg.get("api_hash"))
+    has_session_string = bool(cfg.get("session_string"))
+    has_phone_auth = has_api and bool(settings.telegram_phone)
+    if not (has_session_string or has_phone_auth) or not has_api:
         raise RuntimeError(
-            "Telegram credentials are not configured. Set TELEGRAM_API_ID, TELEGRAM_API_HASH, TELEGRAM_PHONE."
+            "Telegram credentials not configured. Настройте в UI: Telegram-парсер, или в .env."
         )
 
 
@@ -27,7 +32,8 @@ async def _ingest_async(db: Session, *, source: Source) -> dict[str, Any]:
     if not source.tg_channel_username:
         raise ValueError("tg_channel_username required")
 
-    _ensure_tg_config()
+    cfg = get_telegram_config(db)
+    _ensure_tg_config(cfg)
 
     st = db.query(TgChannelState).filter(TgChannelState.source_id == source.id).one_or_none()
     if not st:
@@ -41,11 +47,16 @@ async def _ingest_async(db: Session, *, source: Source) -> dict[str, Any]:
     st.fetched_count_last_run = 0
     db.commit()
 
-    session_name = f"newsint_{username}"
+    # Prefer StringSession (DB or env) over file-based session
+    session_string = cfg.get("session_string") or ""
+    if session_string:
+        session = StringSession(session_string)
+    else:
+        session = f"{settings.telegram_session_dir}/newsint_main"
     client = TelegramClient(
-        session=f"{settings.telegram_session_dir}/{session_name}",
-        api_id=settings.telegram_api_id,
-        api_hash=settings.telegram_api_hash,
+        session=session,
+        api_id=cfg["api_id"],
+        api_hash=cfg["api_hash"],
     )
 
     backfill = int((source.settings_json or {}).get("backfill_limit") or 200)
@@ -56,9 +67,9 @@ async def _ingest_async(db: Session, *, source: Source) -> dict[str, Any]:
     try:
         await client.connect()
         if not await client.is_user_authorized():
-            # We don't do interactive code entry in workers.
             raise RuntimeError(
-                "Telegram session is not authorized. Run one-time auth to create session file in TELEGRAM_SESSION_DIR."
+                "Telegram session is not authorized. Use tg-auth (docker compose run --rm tg-auth) "
+                "or generate TELEGRAM_SESSION_STRING (python backend/scripts/generate_telegram_session_string.py)."
             )
 
         entity = await client.get_entity(username)
@@ -112,6 +123,7 @@ async def _ingest_async(db: Session, *, source: Source) -> dict[str, Any]:
                 text=search_text,
                 source_region_ids=source.region_tags,
                 source_competitor_id=source.competitor_id,
+                source_developer_id=source.developer_id,
             )
 
             stmt = (
@@ -119,11 +131,13 @@ async def _ingest_async(db: Session, *, source: Source) -> dict[str, Any]:
                 .values(
                     source_id=source.id,
                     competitor_id=source.competitor_id,
+                    developer_id=source.developer_id,
                     url=url,
                     canonical_url=canonical,
                     title=title,
                     author=username,
                     published_at=published_at,
+                    period_month=period_month_from_dt(published_at, dt.datetime.now(dt.timezone.utc)),
                     snippet=content_text[:300] if content_text else None,
                     content_text=content_text,
                     content_html=None,
@@ -131,6 +145,7 @@ async def _ingest_async(db: Session, *, source: Source) -> dict[str, Any]:
                     simhash64=sh,
                     region_ids=tags["region_ids"],
                     competitor_mentions=tags["competitor_mentions"],
+                    developer_mentions=tags["developer_mentions"],
                     topic_tags=tags["topic_tags"],
                 )
                 .on_conflict_do_nothing(index_elements=["canonical_url"])

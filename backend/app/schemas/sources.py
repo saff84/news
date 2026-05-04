@@ -16,6 +16,7 @@ class SourceBase(BaseModel):
 
     region_tags: list[UUID] = Field(default_factory=list)
     competitor_id: UUID | None = None
+    developer_id: UUID | None = None
 
     enabled: bool = True
     fetch_frequency_min: int = Field(default=60, ge=1, le=7 * 24 * 60)
@@ -42,6 +43,7 @@ class SourceUpdate(BaseModel):
     tg_channel_username: str | None = Field(default=None, max_length=128)
     region_tags: list[UUID] | None = None
     competitor_id: UUID | None = None
+    developer_id: UUID | None = None
     enabled: bool | None = None
     fetch_frequency_min: int | None = Field(default=None, ge=1, le=7 * 24 * 60)
     priority: int | None = Field(default=None, ge=-1000, le=1000)

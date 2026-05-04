@@ -9,7 +9,7 @@ from sqlalchemy.orm import Session
 from app.core.deps import get_request_meta, require_role
 from app.db import get_db
 from app.models.auth import Role, User
-from app.models.domain import NewsItem, RssState, Source, SourceType, TgChannelState
+from app.models.domain import MaxChannelState, NewsItem, RssState, Source, SourceType, TgChannelState, VkGroupState
 from app.parsers.keyword_filter import should_keep_item
 from app.schemas.sources import SourceCreate, SourceListOut, SourceOut, SourceUpdate
 from app.services.audit import write_audit_log
@@ -17,7 +17,14 @@ from app.services.audit import write_audit_log
 router = APIRouter(prefix="/sources", tags=["sources"])
 
 
-def _validate_source_payload(source_type: SourceType, base_url: str | None, feed_url: str | None, tg_username: str | None, parsing_template_id):
+def _validate_source_payload(
+    source_type: SourceType,
+    base_url: str | None,
+    feed_url: str | None,
+    tg_username: str | None,
+    parsing_template_id,
+    settings_json: dict | None,
+):
     if source_type == SourceType.RSS_ATOM:
         if not feed_url:
             raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="feed_url required for RSS_ATOM")
@@ -31,12 +38,29 @@ def _validate_source_payload(source_type: SourceType, base_url: str | None, feed
     if source_type == SourceType.TELEGRAM_CHANNEL:
         if not tg_username:
             raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="tg_channel_username required")
+    if source_type == SourceType.MAX_CHANNEL:
+        cfg = settings_json or {}
+        max_channel_id = str(cfg.get("max_channel_id") or "").strip()
+        if not max_channel_id:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail="settings_json.max_channel_id required for MAX_CHANNEL",
+            )
+    if source_type == SourceType.VK_GROUP:
+        cfg = settings_json or {}
+        vk_group_id = str(cfg.get("vk_group_id") or "").strip()
+        if not vk_group_id:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail="settings_json.vk_group_id required for VK_GROUP",
+            )
 
 
 @router.get("", response_model=SourceListOut)
 def list_sources(
     source_type: str | None = Query(default=None),
     competitor_id: uuid.UUID | None = Query(default=None),
+    developer_id: uuid.UUID | None = Query(default=None),
     enabled: bool | None = Query(default=None),
     offset: int = Query(default=0, ge=0),
     limit: int = Query(default=50, ge=1, le=200),
@@ -48,6 +72,8 @@ def list_sources(
         q = q.filter(Source.source_type == SourceType(source_type))
     if competitor_id:
         q = q.filter(Source.competitor_id == competitor_id)
+    if developer_id:
+        q = q.filter(Source.developer_id == developer_id)
     if enabled is not None:
         q = q.filter(Source.enabled.is_(enabled))
     total = q.with_entities(func.count(Source.id)).scalar() or 0
@@ -76,7 +102,14 @@ def create_source(
 ) -> SourceOut:
     st = SourceType(payload.source_type)
     tg_username = payload.tg_channel_username.lstrip("@") if payload.tg_channel_username else None
-    _validate_source_payload(st, payload.base_url, payload.feed_url, tg_username, payload.parsing_template_id)
+    _validate_source_payload(
+        st,
+        payload.base_url,
+        payload.feed_url,
+        tg_username,
+        payload.parsing_template_id,
+        payload.settings_json,
+    )
 
     s = Source(
         source_type=st,
@@ -86,6 +119,7 @@ def create_source(
         tg_channel_username=tg_username,
         region_tags=payload.region_tags,
         competitor_id=payload.competitor_id,
+        developer_id=payload.developer_id,
         enabled=payload.enabled,
         fetch_frequency_min=payload.fetch_frequency_min,
         priority=payload.priority,
@@ -105,6 +139,12 @@ def create_source(
         db.add(RssState(source_id=s.id))
     if st == SourceType.TELEGRAM_CHANNEL:
         db.add(TgChannelState(source_id=s.id, channel_username=tg_username or ""))
+    if st == SourceType.MAX_CHANNEL:
+        max_channel_id = str((payload.settings_json or {}).get("max_channel_id") or "").strip()
+        db.add(MaxChannelState(source_id=s.id, channel_id=max_channel_id))
+    if st == SourceType.VK_GROUP:
+        vk_group_id = str((payload.settings_json or {}).get("vk_group_id") or "").strip()
+        db.add(VkGroupState(source_id=s.id, group_id=vk_group_id))
     db.commit()
 
     meta = get_request_meta(request)
@@ -152,6 +192,8 @@ def update_source(
         s.region_tags = payload.region_tags
     if payload.competitor_id is not None:
         s.competitor_id = payload.competitor_id
+    if payload.developer_id is not None:
+        s.developer_id = payload.developer_id
     if payload.enabled is not None:
         s.enabled = payload.enabled
     if payload.fetch_frequency_min is not None:
@@ -171,7 +213,7 @@ def update_source(
     if payload.settings_json is not None:
         s.settings_json = payload.settings_json
 
-    _validate_source_payload(st, s.base_url, s.feed_url, s.tg_channel_username, s.parsing_template_id)
+    _validate_source_payload(st, s.base_url, s.feed_url, s.tg_channel_username, s.parsing_template_id, s.settings_json)
 
     # Ensure per-type state row exists
     if st == SourceType.RSS_ATOM:
@@ -182,6 +224,20 @@ def update_source(
         exists = db.query(TgChannelState).filter(TgChannelState.source_id == s.id).one_or_none()
         if not exists:
             db.add(TgChannelState(source_id=s.id, channel_username=s.tg_channel_username or ""))
+    if st == SourceType.MAX_CHANNEL:
+        exists = db.query(MaxChannelState).filter(MaxChannelState.source_id == s.id).one_or_none()
+        max_channel_id = str((s.settings_json or {}).get("max_channel_id") or "").strip()
+        if not exists:
+            db.add(MaxChannelState(source_id=s.id, channel_id=max_channel_id))
+        else:
+            exists.channel_id = max_channel_id
+    if st == SourceType.VK_GROUP:
+        exists = db.query(VkGroupState).filter(VkGroupState.source_id == s.id).one_or_none()
+        vk_group_id = str((s.settings_json or {}).get("vk_group_id") or "").strip()
+        if not exists:
+            db.add(VkGroupState(source_id=s.id, group_id=vk_group_id))
+        else:
+            exists.group_id = vk_group_id
 
     meta = get_request_meta(request)
     write_audit_log(

@@ -38,10 +38,21 @@ services:
       CORS_ORIGINS: "http://localhost:5173"
       STORAGE_DIR: "/data/storage"
       PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD: "1"
+      TELEGRAM_SESSION_DIR: "/data/tg"
+      TELEGRAM_API_ID: ${TELEGRAM_API_ID:-}
+      TELEGRAM_API_HASH: ${TELEGRAM_API_HASH:-}
+      TELEGRAM_PHONE: ${TELEGRAM_PHONE:-}
+      TELEGRAM_SESSION_STRING: ${TELEGRAM_SESSION_STRING:-}
+      MAX_API_BASE: ${MAX_API_BASE:-https://platform-api.max.ru}
+      MAX_BOT_TOKEN: ${MAX_BOT_TOKEN:-}
+      VK_API_BASE: ${VK_API_BASE:-https://api.vk.com/method}
+      VK_API_VERSION: ${VK_API_VERSION:-5.199}
+      VK_ACCESS_TOKEN: ${VK_ACCESS_TOKEN:-}
     ports:
       - "8000:8000"
     volumes:
       - storage:/data/storage
+      - tgdata:/data/tg
     depends_on:
       db:
         condition: service_healthy
@@ -58,6 +69,15 @@ services:
       SECRET_KEY: "dev-change-me"
       STORAGE_DIR: "/data/storage"
       TELEGRAM_SESSION_DIR: "/data/tg"
+      TELEGRAM_API_ID: ${TELEGRAM_API_ID:-}
+      TELEGRAM_API_HASH: ${TELEGRAM_API_HASH:-}
+      TELEGRAM_PHONE: ${TELEGRAM_PHONE:-}
+      TELEGRAM_SESSION_STRING: ${TELEGRAM_SESSION_STRING:-}
+      MAX_API_BASE: ${MAX_API_BASE:-https://platform-api.max.ru}
+      MAX_BOT_TOKEN: ${MAX_BOT_TOKEN:-}
+      VK_API_BASE: ${VK_API_BASE:-https://api.vk.com/method}
+      VK_API_VERSION: ${VK_API_VERSION:-5.199}
+      VK_ACCESS_TOKEN: ${VK_ACCESS_TOKEN:-}
     # NOTE: use $$ to escape Compose variable interpolation; let shell expand inside container
     command: ["sh", "-lc", "alembic upgrade head && rq worker -u $$REDIS_URL default"]
     volumes:
@@ -70,6 +90,8 @@ services:
         condition: service_healthy
 
   tg-auth:
+    profiles:
+      - manual
     build:
       context: ./backend
     environment:
@@ -78,6 +100,11 @@ services:
       REDIS_URL: redis://redis:6379/0
       SECRET_KEY: "dev-change-me"
       STORAGE_DIR: "/data/storage"
+      MAX_API_BASE: ${MAX_API_BASE:-https://platform-api.max.ru}
+      MAX_BOT_TOKEN: ${MAX_BOT_TOKEN:-}
+      VK_API_BASE: ${VK_API_BASE:-https://api.vk.com/method}
+      VK_API_VERSION: ${VK_API_VERSION:-5.199}
+      VK_ACCESS_TOKEN: ${VK_ACCESS_TOKEN:-}
       TELEGRAM_SESSION_DIR: "/data/tg"
       TELEGRAM_API_ID: ${TELEGRAM_API_ID:-}
       TELEGRAM_API_HASH: ${TELEGRAM_API_HASH:-}

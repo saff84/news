@@ -4,7 +4,7 @@ import uuid
 
 from sqlalchemy.orm import Session
 
-from app.models.domain import Competitor, Region
+from app.models.domain import Competitor, Developer, Region
 
 
 def _contains_any(text_lc: str, terms: list[str]) -> bool:
@@ -23,10 +23,11 @@ def tag_item(
     text: str,
     source_region_ids: list[uuid.UUID] | None = None,
     source_competitor_id: uuid.UUID | None = None,
+    source_developer_id: uuid.UUID | None = None,
 ) -> dict:
     """
     Rule-based tagging:
-    - competitor mentions by aliases
+    - competitor / developer mentions by aliases (отдельные сущности)
     - region mapping by region keywords/aliases/subjects (+ source region tags)
     """
     text_lc = (text or "").lower()
@@ -43,13 +44,23 @@ def tag_item(
     if source_competitor_id:
         competitor_mentions.add(source_competitor_id)
     for c in competitors:
-        terms = [c.name] + (c.aliases or [])
+        terms = [c.name] + (c.aliases or []) + (c.tags or [])
         if _contains_any(text_lc, terms):
             competitor_mentions.add(c.id)
+
+    developers = db.query(Developer).filter(Developer.is_active.is_(True)).all()
+    developer_mentions: set[uuid.UUID] = set()
+    if source_developer_id:
+        developer_mentions.add(source_developer_id)
+    for d in developers:
+        terms = [d.name] + (d.aliases or []) + (d.tags or [])
+        if _contains_any(text_lc, terms):
+            developer_mentions.add(d.id)
 
     return {
         "region_ids": list(region_ids),
         "competitor_mentions": list(competitor_mentions),
+        "developer_mentions": list(developer_mentions),
         "topic_tags": [],  # TODO: keyword sets
     }
 

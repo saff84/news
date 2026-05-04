@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
-import { api, type CompetitorOut, type ParsingTemplateOut, type RegionOut, type SourceOut } from "../lib/api";
+import { Link } from "react-router-dom";
+import { api, type CompetitorOut, type DeveloperOut, type ParsingTemplateOut, type RegionOut, type SourceOut } from "../lib/api";
 import { useAuth } from "../state/auth";
 import { useToast } from "../state/toast";
 import { HelpText, HintBox, InstructionBox } from "../components/Field";
@@ -10,7 +11,10 @@ type SourceForm = {
   base_url: string;
   feed_url: string;
   tg_channel_username: string;
+  max_channel_id: string;
+  vk_group_id: string;
   competitor_id: string;
+  developer_id: string;
   region_tags: string[];
   enabled: boolean;
   fetch_frequency_min: number;
@@ -50,7 +54,10 @@ function toForm(s?: SourceOut): SourceForm {
     base_url: (s?.base_url ?? "") as string,
     feed_url: (s?.feed_url ?? "") as string,
     tg_channel_username: (s?.tg_channel_username ?? "") as string,
+    max_channel_id: ((settings.max_channel_id as string | undefined) ?? "") as string,
+    vk_group_id: ((settings.vk_group_id as string | undefined) ?? "") as string,
     competitor_id: (s?.competitor_id ?? "") as string,
+    developer_id: (s?.developer_id ?? "") as string,
     region_tags: s?.region_tags ?? [],
     enabled: s?.enabled ?? true,
     fetch_frequency_min: s?.fetch_frequency_min ?? 60,
@@ -75,6 +82,7 @@ export function SourcesPage() {
   const [items, setItems] = useState<SourceOut[]>([]);
   const [regions, setRegions] = useState<RegionOut[]>([]);
   const [competitors, setCompetitors] = useState<CompetitorOut[]>([]);
+  const [developers, setDevelopers] = useState<DeveloperOut[]>([]);
   const [templates, setTemplates] = useState<ParsingTemplateOut[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -88,15 +96,17 @@ export function SourcesPage() {
     setLoading(true);
     setError(null);
     try {
-      const [s, r, c, t] = await Promise.all([
+      const [s, r, c, d, t] = await Promise.all([
         api.sources.list(accessToken),
         api.regions.list(accessToken),
         api.competitors.list(accessToken),
+        api.developers.list(accessToken),
         api.parsingTemplates.list(accessToken),
       ]);
       setItems(s.items);
       setRegions(r.items);
       setCompetitors(c.items);
+      setDevelopers(d.items);
       setTemplates(t.items);
     } catch (e: any) {
       setError(e?.message || "Ошибка загрузки");
@@ -112,10 +122,13 @@ export function SourcesPage() {
 
   const templateById = useMemo(() => new Map(templates.map((t) => [t.id, `${t.name} v${t.version}`])), [templates]);
   const competitorById = useMemo(() => new Map(competitors.map((c) => [c.id, c.name])), [competitors]);
+  const developerById = useMemo(() => new Map(developers.map((d) => [d.id, d.name])), [developers]);
   const regionById = useMemo(() => new Map(regions.map((r) => [r.id, r.name])), [regions]);
 
   const isRss = form.source_type === "RSS_ATOM";
   const isTelegram = form.source_type === "TELEGRAM_CHANNEL";
+  const isMax = form.source_type === "MAX_CHANNEL";
+  const isVk = form.source_type === "VK_GROUP";
   const isSitemap = form.source_type === "SITEMAP";
   const isHtml = form.source_type === "HTML_LIST_DETAIL" || form.source_type === "HTML_DETAIL_ONLY" || isSitemap;
   const needsTemplate = form.source_type === "HTML_LIST_DETAIL" || form.source_type === "HTML_DETAIL_ONLY";
@@ -157,27 +170,32 @@ export function SourcesPage() {
       {form.source_type === "HTML_LIST_DETAIL" ? (
         <div className="space-y-2">
           <div className="font-medium">Для чего</div>
-          <div>Сайты без RSS. Мы ходим на страницу списка, находим ссылки, затем парсим детальные страницы по шаблону.</div>
+          <div>Сайты без RSS. Система открывает страницу <b>списка</b> (<code>base_url</code>), собирает ссылки на статьи по селектору из шаблона (<code>list.item_links_css</code>), затем для каждой ссылки загружает <b>деталь</b> и извлекает поля по блоку <code>detail</code> шаблона.</div>
 
           <div className="font-medium">Что заполнить</div>
           <ul className="list-disc pl-4">
             <li>
-              <b>base_url</b> — URL раздела/ленты, например: <code>https://site.ru/news</code>
+              <b>base_url</b> — URL раздела с лентой, например: <code>https://site.ru/news</code>
             </li>
             <li>
-              <b>Шаблон парсинга</b> — JSON с CSS‑селекторами для детальной страницы
+              <b>Шаблон парсинга</b> — на странице{" "}
+              <Link to="/parsing-templates" className="font-medium text-sky-700 underline hover:text-sky-900">
+                Шаблоны парсинга
+              </Link>
+              : в шаблоне нужны и <code>list.*</code> (поиск ссылок), и <code>detail.*</code> (заголовок, дата, тело). Там же есть пошаговая инструкция и справочник полей.
             </li>
           </ul>
 
           <div className="font-medium">Рекомендации</div>
           <ul className="list-disc pl-4">
-            <li>Сначала создайте шаблон и прогоните “Тест шаблона” на одной статье.</li>
-            <li>Начинайте с простых селекторов: <code>h1</code>, <code>time[datetime]</code>, <code>article</code>.</li>
+            <li>Сначала настройте только <code>detail</code> и проверьте его на одной статье через «Тест шаблона».</li>
+            <li>Затем добавьте <code>list.item_links_css</code> так, чтобы на странице списка выделялись именно ссылки на статьи, а не меню или «все теги».</li>
+            <li>Простые стартовые селекторы: <code>h1</code>, <code>time[datetime]</code>, <code>article</code>.</li>
           </ul>
 
-          <div className="font-medium">Статус реализации</div>
+          <div className="font-medium">Как это работает в бэкенде</div>
           <div>
-            “List→detail” ingestion подключён: мы находим ссылки на детальные статьи (по CSS-селектору) и парсим детали по шаблону.
+            Ingestor читает HTML списка, нормализует URL, ограничивает число страниц через <code>list.max_pages</code>, опционально следует <code>list.next_page_css</code>, затем для каждого URL детали вызывает тот же движок, что и «Тест шаблона» (<code>html_template_engine.extract_from_html</code>).
           </div>
         </div>
       ) : null}
@@ -185,7 +203,14 @@ export function SourcesPage() {
       {form.source_type === "HTML_DETAIL_ONLY" ? (
         <div className="space-y-2">
           <div className="font-medium">Для чего</div>
-          <div>Когда у вас уже есть конкретные URL статей (или другой модуль будет их находить), и нужно только парсить “деталь”.</div>
+          <div>
+            Когда известны прямые URL статей (или URL задаётся иначе), а с страницы списка переходить не нужно. Достаточно шаблона с блоком{" "}
+            <code>detail</code> (и при необходимости <code>cleanup</code>); блок <code>list</code> в шаблоне не нужен. Подробности и тест — на{" "}
+            <Link to="/parsing-templates" className="font-medium text-sky-700 underline hover:text-sky-900">
+              Шаблоны парсинга
+            </Link>
+            .
+          </div>
 
           <div className="font-medium">Что заполнить</div>
           <ul className="list-disc pl-4">
@@ -194,7 +219,7 @@ export function SourcesPage() {
               <code>https://site.ru/news/123</code>
             </li>
             <li>
-              <b>Шаблон парсинга</b> — селекторы для title/date/author/body
+              <b>Шаблон парсинга</b> — JSON с <code>detail.title</code>, <code>detail.date</code>, <code>detail.body</code> (см. справочник на странице шаблонов).
             </li>
           </ul>
 
@@ -259,6 +284,54 @@ export function SourcesPage() {
           </ul>
         </div>
       ) : null}
+
+      {isMax ? (
+        <div className="space-y-2">
+          <div className="font-medium">Для чего</div>
+          <div>Сбор новостей из открытых каналов/чатов MAX через Bot API.</div>
+
+          <div className="font-medium">Что заполнить</div>
+          <ul className="list-disc pl-4">
+            <li>
+              <b>MAX channel/chat id</b> — идентификатор канала/чата в MAX (сохранится в settings_json.max_channel_id).
+            </li>
+            <li>
+              (Опционально) <b>MAX bot token</b> в settings_json или через env <code>MAX_BOT_TOKEN</code>.
+            </li>
+          </ul>
+
+          <div className="font-medium">Как работает</div>
+          <ul className="list-disc pl-4">
+            <li>Планировщик запускает источник по расписанию, как и остальные типы.</li>
+            <li>Парсер ходит в API MAX с заголовком Authorization, забирает сообщения, ведёт last_message_id.</li>
+            <li>Фильтр include/exclude_keywords применяется к тексту сообщения.</li>
+          </ul>
+        </div>
+      ) : null}
+
+      {isVk ? (
+        <div className="space-y-2">
+          <div className="font-medium">Для чего</div>
+          <div>Сбор новостей из открытых сообществ VK (стена группы) через VK API.</div>
+
+          <div className="font-medium">Что заполнить</div>
+          <ul className="list-disc pl-4">
+            <li>
+              <b>VK group id / domain</b> — например: <code>123456</code>, <code>public123456</code>, <code>club123456</code> или <code>my_group</code>.
+            </li>
+            <li>
+              (Опционально) <b>VK token</b> в <code>settings_json.vk_access_token</code> либо через env <code>VK_ACCESS_TOKEN</code>.
+            </li>
+          </ul>
+
+          <div className="font-medium">Как работает</div>
+          <ul className="list-disc pl-4">
+            <li>Планировщик запускает источник по расписанию.</li>
+            <li>Парсер вызывает <code>wall.get</code>, хранит <code>last_post_id</code> и забирает только новые посты.</li>
+            <li>Фильтр include/exclude_keywords применяется к тексту поста.</li>
+          </ul>
+        </div>
+      ) : null}
     </InstructionBox>
   );
 
@@ -274,6 +347,8 @@ export function SourcesPage() {
               <li>Для <b>RSS_ATOM</b> нужен <code className="rounded bg-white px-1">feed_url</code>.</li>
               <li>Для <b>HTML_LIST_DETAIL / HTML_DETAIL_ONLY</b> нужен <code className="rounded bg-white px-1">base_url</code> и <code className="rounded bg-white px-1">parsing_template</code>.</li>
               <li>Для <b>TELEGRAM_CHANNEL</b> нужен <code className="rounded bg-white px-1">@username</code> (публичный).</li>
+              <li>Для <b>MAX_CHANNEL</b> нужен <code className="rounded bg-white px-1">max_channel_id</code> (в форме ниже).</li>
+              <li>Для <b>VK_GROUP</b> нужен <code className="rounded bg-white px-1">vk_group_id</code> (в форме ниже).</li>
             </ul>
           </HintBox>
         </div>
@@ -302,19 +377,20 @@ export function SourcesPage() {
               <th className="px-3 py-2">URL</th>
               <th className="px-3 py-2">Enabled</th>
               <th className="px-3 py-2">Конкурент</th>
+              <th className="px-3 py-2">Застройщик</th>
               <th className="px-3 py-2"></th>
             </tr>
           </thead>
           <tbody>
             {loading ? (
               <tr>
-                <td className="px-3 py-3 text-slate-600" colSpan={6}>
+                <td className="px-3 py-3 text-slate-600" colSpan={7}>
                   Загрузка…
                 </td>
               </tr>
             ) : items.length === 0 ? (
               <tr>
-                <td className="px-3 py-3 text-slate-600" colSpan={6}>
+                <td className="px-3 py-3 text-slate-600" colSpan={7}>
                   Пусто
                 </td>
               </tr>
@@ -323,9 +399,16 @@ export function SourcesPage() {
                 <tr key={s.id} className="border-t">
                   <td className="px-3 py-2">{s.source_type}</td>
                   <td className="px-3 py-2 font-medium">{s.name || "—"}</td>
-                  <td className="px-3 py-2 text-xs text-slate-700">{s.base_url || s.feed_url || (s.tg_channel_username ? `@${s.tg_channel_username}` : "—")}</td>
+                  <td className="px-3 py-2 text-xs text-slate-700">
+                    {s.base_url ||
+                      s.feed_url ||
+                      (s.tg_channel_username ? `@${s.tg_channel_username}` : "") ||
+                      ((s.settings_json?.max_channel_id as string | undefined) ?? "") ||
+                      ((s.settings_json?.vk_group_id as string | undefined) ?? "—")}
+                  </td>
                   <td className="px-3 py-2">{s.enabled ? "Да" : "Нет"}</td>
                   <td className="px-3 py-2">{s.competitor_id ? competitorById.get(s.competitor_id) || s.competitor_id : "—"}</td>
+                  <td className="px-3 py-2">{s.developer_id ? developerById.get(s.developer_id) || s.developer_id : "—"}</td>
                   <td className="px-3 py-2 text-right">
                     {canWrite ? (
                       <div className="flex justify-end gap-2">
@@ -390,19 +473,39 @@ export function SourcesPage() {
                         if (next === "RSS_ATOM") {
                           cleared.base_url = "";
                           cleared.tg_channel_username = "";
+                          cleared.max_channel_id = "";
+                          cleared.vk_group_id = "";
                           cleared.parsing_template_id = "";
                         } else if (next === "TELEGRAM_CHANNEL") {
                           cleared.base_url = "";
                           cleared.feed_url = "";
+                          cleared.max_channel_id = "";
+                          cleared.vk_group_id = "";
+                          cleared.parsing_template_id = "";
+                        } else if (next === "MAX_CHANNEL") {
+                          cleared.base_url = "";
+                          cleared.feed_url = "";
+                          cleared.tg_channel_username = "";
+                          cleared.vk_group_id = "";
+                          cleared.parsing_template_id = "";
+                        } else if (next === "VK_GROUP") {
+                          cleared.base_url = "";
+                          cleared.feed_url = "";
+                          cleared.tg_channel_username = "";
+                          cleared.max_channel_id = "";
                           cleared.parsing_template_id = "";
                         } else if (next === "SITEMAP") {
                           cleared.feed_url = "";
                           cleared.tg_channel_username = "";
+                          cleared.max_channel_id = "";
+                          cleared.vk_group_id = "";
                           cleared.parsing_template_id = "";
                         } else {
                           // HTML_* types
                           cleared.feed_url = "";
                           cleared.tg_channel_username = "";
+                          cleared.max_channel_id = "";
+                          cleared.vk_group_id = "";
                         }
                         return { ...f, ...cleared, source_type: next };
                       });
@@ -413,8 +516,10 @@ export function SourcesPage() {
                     <option value="HTML_DETAIL_ONLY">HTML_DETAIL_ONLY</option>
                     <option value="SITEMAP">SITEMAP</option>
                     <option value="TELEGRAM_CHANNEL">TELEGRAM_CHANNEL</option>
+                    <option value="MAX_CHANNEL">MAX_CHANNEL</option>
+                    <option value="VK_GROUP">VK_GROUP</option>
                   </select>
-                  <HelpText>Определяет стратегию загрузки (RSS, HTML-шаблон, Telegram).</HelpText>
+                  <HelpText>Определяет стратегию загрузки (RSS, HTML-шаблон, Telegram, MAX).</HelpText>
                 </label>
                 <label className="block md:col-span-2">
                   <div className="text-sm text-slate-700">Имя (опционально)</div>
@@ -426,13 +531,16 @@ export function SourcesPage() {
               <div className="rounded-lg border-2 border-amber-200 bg-amber-50 p-4">
                 <div className="text-sm font-bold text-slate-800">Фильтр по словам</div>
                 <p className="mt-1 text-xs text-slate-600">При сборе сохраняются только новости, прошедшие фильтр. Пусто = без фильтра.</p>
+                <p className="mt-1 text-xs text-amber-700">
+                  <b>Формат ключей:</b> через запятую, пробел, точку с запятой или с новой строки. Примеры: <code>слово1, слово2</code> или каждое слово на новой строке.
+                </p>
                 <div className="mt-3 grid grid-cols-1 gap-4 sm:grid-cols-2">
                   <label className="block">
                     <span className="text-sm font-medium text-slate-700">Включить (хотя бы одно слово)</span>
                     <textarea
                       className="mt-1.5 block w-full rounded border border-slate-300 bg-white px-3 py-2 text-sm"
                       rows={2}
-                      placeholder="недвижимость, строительство, ипотека"
+                      placeholder="расширение, новинка"
                       value={form.include_keywords}
                       onChange={(e) => setForm((f) => ({ ...f, include_keywords: e.target.value }))}
                     />
@@ -452,12 +560,27 @@ export function SourcesPage() {
                 </div>
                 {editing && isAdmin ? (
                   <div className="mt-3">
+                    <p className="mb-2 text-xs font-medium text-amber-800">
+                      Очистка использует ключи из БД. Сначала нажмите «Сохранить», затем «Очистить».
+                    </p>
                     <button
                       type="button"
                       className="rounded border border-amber-300 bg-amber-100 px-3 py-1.5 text-sm text-amber-800 hover:bg-amber-200"
                       onClick={async () => {
                         if (!accessToken || !editing) return;
-                        if (!confirm("Удалить из БД новости, не прошедшие текущий фильтр? Сначала сохраните источник с нужными ключами.")) return;
+                        const savedInclude = ((editing.settings_json as Record<string, unknown>)?.include_keywords as string[] | undefined) ?? [];
+                        const savedExclude = ((editing.settings_json as Record<string, unknown>)?.exclude_keywords as string[] | undefined) ?? [];
+                        const hasFormKeywords = parseKeywords(form.include_keywords).length > 0 || parseKeywords(form.exclude_keywords).length > 0;
+                        const hasSavedKeywords = savedInclude.length > 0 || savedExclude.length > 0;
+                        if (hasFormKeywords && !hasSavedKeywords) {
+                          push({
+                            variant: "error",
+                            title: "Сначала сохраните",
+                            description: "Ключи в форме не сохранены. Нажмите «Сохранить», затем «Очистить старые новости».",
+                          });
+                          return;
+                        }
+                        if (!confirm("Удалить из БД новости, не прошедшие текущий фильтр?")) return;
                         try {
                           const res = await api.sources.cleanupNews(accessToken, editing.id);
                           push({
@@ -530,6 +653,36 @@ export function SourcesPage() {
                 </div>
               ) : null}
 
+              {isMax ? (
+                <div className="grid grid-cols-1 gap-3 md:grid-cols-2">
+                  <label className="block md:col-span-2">
+                    <div className="text-sm text-slate-700">MAX channel/chat id</div>
+                    <input
+                      className="mt-1 w-full rounded border px-3 py-2 text-sm"
+                      value={form.max_channel_id}
+                      onChange={(e) => setForm((f) => ({ ...f, max_channel_id: e.target.value }))}
+                      placeholder="123456789 или channel-id"
+                    />
+                    <HelpText>Идентификатор канала/чата в MAX. Сохраняется как settings_json.max_channel_id.</HelpText>
+                  </label>
+                </div>
+              ) : null}
+
+              {isVk ? (
+                <div className="grid grid-cols-1 gap-3 md:grid-cols-2">
+                  <label className="block md:col-span-2">
+                    <div className="text-sm text-slate-700">VK group id / domain</div>
+                    <input
+                      className="mt-1 w-full rounded border px-3 py-2 text-sm"
+                      value={form.vk_group_id}
+                      onChange={(e) => setForm((f) => ({ ...f, vk_group_id: e.target.value }))}
+                      placeholder="public123456 / club123456 / 123456 / domain"
+                    />
+                    <HelpText>Сохраняется как settings_json.vk_group_id.</HelpText>
+                  </label>
+                </div>
+              ) : null}
+
               <div className="grid grid-cols-1 gap-3 md:grid-cols-2">
                 <label className="block">
                   <div className="text-sm text-slate-700">Конкурент (опционально)</div>
@@ -541,7 +694,19 @@ export function SourcesPage() {
                       </option>
                     ))}
                   </select>
-                  <HelpText>Если задано — источник попадёт в конкурентный раздел отчёта.</HelpText>
+                  <HelpText>Привязка к конкуренту и авто-тег в новостях.</HelpText>
+                </label>
+                <label className="block">
+                  <div className="text-sm text-slate-700">Застройщик (опционально)</div>
+                  <select className="mt-1 w-full rounded border px-3 py-2 text-sm" value={form.developer_id} onChange={(e) => setForm((f) => ({ ...f, developer_id: e.target.value }))}>
+                    <option value="">—</option>
+                    {developers.map((d) => (
+                      <option key={d.id} value={d.id}>
+                        {d.name}
+                      </option>
+                    ))}
+                  </select>
+                  <HelpText>Отдельно от конкурента: раздел «Застройщики» в отчёте и теги в тексте.</HelpText>
                 </label>
                 {needsTemplate ? (
                   <label className="block">
@@ -703,6 +868,7 @@ export function SourcesPage() {
                       feed_url: form.feed_url || null,
                       tg_channel_username: form.tg_channel_username || null,
                       competitor_id: form.competitor_id || null,
+                      developer_id: form.developer_id || null,
                       region_tags: form.region_tags,
                       enabled: form.enabled,
                       fetch_frequency_min: form.fetch_frequency_min,
@@ -714,6 +880,8 @@ export function SourcesPage() {
                       parsing_template_id: form.parsing_template_id || null,
                       settings_json: {
                         ...settings_json,
+                        max_channel_id: form.max_channel_id || undefined,
+                        vk_group_id: form.vk_group_id || undefined,
                         include_keywords: parseKeywords(form.include_keywords),
                         exclude_keywords: parseKeywords(form.exclude_keywords),
                       },

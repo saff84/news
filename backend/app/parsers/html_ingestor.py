@@ -12,7 +12,7 @@ from sqlalchemy.orm import Session
 from app.models.domain import NewsItem, ParsingTemplate, Source
 from app.parsers.html_template_engine import extract_from_html
 from app.parsers.limits import acquire_rate_slot, domain_key
-from app.parsers.normalize import canonicalize_url, normalize_text, sha256_hex, simhash64
+from app.parsers.normalize import canonicalize_url, normalize_text, period_month_from_dt, sha256_hex, simhash64
 from app.parsers.keyword_filter import should_keep_item
 from app.parsers.robots import can_fetch
 from app.parsers.sitemap import SitemapUrl, fetch_sitemap_urls
@@ -209,16 +209,19 @@ def ingest_html(db: Session, *, source: Source) -> dict[str, Any]:
             text=search_text,
             source_region_ids=source.region_tags,
             source_competitor_id=source.competitor_id,
+            source_developer_id=source.developer_id,
         )
 
         stmt = pg_insert(NewsItem).values(
             source_id=source.id,
             competitor_id=source.competitor_id,
+            developer_id=source.developer_id,
             url=url,
             canonical_url=canonical,
             title=title,
             author=author,
             published_at=published_at,
+            period_month=period_month_from_dt(published_at, dt.datetime.now(dt.timezone.utc)),
             snippet=(normalize_text(content_text or "")[:300] if content_text else None),
             content_text=content_text,
             content_html=content_html,
@@ -226,6 +229,7 @@ def ingest_html(db: Session, *, source: Source) -> dict[str, Any]:
             simhash64=sh,
             region_ids=tags["region_ids"],
             competitor_mentions=tags["competitor_mentions"],
+            developer_mentions=tags["developer_mentions"],
             topic_tags=tags["topic_tags"],
         ).on_conflict_do_nothing(index_elements=["canonical_url"])
         res = db.execute(stmt)

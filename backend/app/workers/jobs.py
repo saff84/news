@@ -9,13 +9,43 @@ from sqlalchemy.orm import Session
 from telethon.errors import FloodWaitError
 
 from app.db import SessionLocal
-from app.models.domain import RssState, Source, SourceType, TgChannelState
+from app.models.domain import MaxChannelState, RssState, Source, SourceType, TgChannelState, VkGroupState
 from app.parsers.html_ingestor import ingest_html
+from app.parsers.max_ingestor import ingest_max_channel
 from app.parsers.rss_ingestor import ingest_rss
 from app.parsers.telegram_ingestor import ingest_telegram
+from app.parsers.vk_ingestor import ingest_vk_group
+from app.workers.indicators import fetch_indicator_cny_rub
 from app.workers.queue import get_redis
 
 log = logging.getLogger("workers.jobs")
+
+
+def run_indicator_job(series: str) -> dict:
+    """
+    Run indicator collection job (CNY_RUB etc). Used by RQ worker.
+    Must be in a proper module (not __main__) so RQ can import it.
+    """
+    import time
+
+    redis = get_redis()
+    db: Session = SessionLocal()
+    try:
+        if series == "CNY_RUB":
+            res = fetch_indicator_cny_rub(db)
+        else:
+            raise ValueError(f"Unknown indicator series: {series}")
+        try:
+            redis.set("indicators:CNY_RUB:last_ok_ts", str(int(time.time())), ex=7 * 24 * 60 * 60)
+        except Exception:
+            pass
+        return res
+    finally:
+        try:
+            redis.delete(f"lock:indicator:{series}")
+        except Exception:
+            pass
+        db.close()
 
 
 def _now() -> datetime:
@@ -70,6 +100,18 @@ def fetch_source(source_id: str) -> dict:
             if not db.query(TgChannelState).filter(TgChannelState.source_id == src.id).one_or_none():
                 db.add(TgChannelState(source_id=src.id, channel_username=src.tg_channel_username or ""))
                 db.commit()
+        if src.source_type == SourceType.MAX_CHANNEL:
+            cfg = src.settings_json or {}
+            max_channel_id = str(cfg.get("max_channel_id") or "").strip()
+            if not db.query(MaxChannelState).filter(MaxChannelState.source_id == src.id).one_or_none():
+                db.add(MaxChannelState(source_id=src.id, channel_id=max_channel_id))
+                db.commit()
+        if src.source_type == SourceType.VK_GROUP:
+            cfg = src.settings_json or {}
+            vk_group_id = str(cfg.get("vk_group_id") or "").strip()
+            if not db.query(VkGroupState).filter(VkGroupState.source_id == src.id).one_or_none():
+                db.add(VkGroupState(source_id=src.id, group_id=vk_group_id))
+                db.commit()
 
         # Ingest based on type
         if src.source_type == SourceType.RSS_ATOM:
@@ -78,6 +120,10 @@ def fetch_source(source_id: str) -> dict:
             result = ingest_html(db, source=src)
         elif src.source_type == SourceType.TELEGRAM_CHANNEL:
             result = ingest_telegram(db, source=src)
+        elif src.source_type == SourceType.MAX_CHANNEL:
+            result = ingest_max_channel(db, source=src)
+        elif src.source_type == SourceType.VK_GROUP:
+            result = ingest_vk_group(db, source=src)
         else:
             raise ValueError(f"Unsupported source_type: {src.source_type}")
 
@@ -123,5 +169,20 @@ def fetch_source(source_id: str) -> dict:
             r.delete(f"lock:source:{sid}")
         except Exception:
             pass
+        db.close()
+
+
+def rebuild_news_clusters_job(
+    days: int = 90,
+    threshold: int = 3,
+    max_items: int = 2000,
+) -> dict:
+    """Фоновая пересборка кластеров похожих новостей (simhash)."""
+    from app.services.news_clustering import rebuild_news_clusters
+
+    db: Session = SessionLocal()
+    try:
+        return rebuild_news_clusters(db, days=days, threshold=threshold, max_items=max_items)
+    finally:
         db.close()
 

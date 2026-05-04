@@ -7,12 +7,10 @@ from datetime import datetime, timezone
 
 from rq import Retry
 from sqlalchemy import func, or_, text
-from sqlalchemy.orm import Session
 
 from app.db import SessionLocal
 from app.models.domain import Source
-from app.workers.jobs import fetch_source
-from app.workers.indicators import fetch_indicator_cny_rub
+from app.workers.jobs import fetch_source, rebuild_news_clusters_job, run_indicator_job
 from app.workers.queue import get_queue, get_redis
 
 log = logging.getLogger("workers.scheduler")
@@ -102,34 +100,39 @@ def enqueue_due_indicators() -> int:
         except Exception:
             locked = True
         if locked:
-            q.enqueue(_run_indicator_job, "CNY_RUB", job_timeout=120)
+            q.enqueue(run_indicator_job, "CNY_RUB", job_timeout=120)
             enqueued += 1
 
     return enqueued
 
 
-def _run_indicator_job(series: str) -> dict:
-    """
-    Wrapper to run indicator jobs with DB session and update Redis timestamps.
-    """
+def enqueue_rebuild_news_clusters() -> int:
+    """Периодически ставит в очередь пересборку кластеров новостей. NEWS_CLUSTER_REBUILD_INTERVAL_S=0 отключает."""
+    interval_s = int(os.getenv("NEWS_CLUSTER_REBUILD_INTERVAL_S", str(6 * 3600)))
+    if interval_s <= 0:
+        return 0
     redis = get_redis()
-    db: Session = SessionLocal()
+    q = get_queue("default")
+    now = int(time.time())
+    throttle_key = "news_clusters:last_enqueue_ts"
+    lock_key = "lock:news_clusters:enqueue"
     try:
-        if series == "CNY_RUB":
-            res = fetch_indicator_cny_rub(db)
-        else:
-            raise ValueError(f"Unknown indicator series: {series}")
-        try:
-            redis.set("indicators:CNY_RUB:last_ok_ts", str(int(time.time())), ex=7 * 24 * 60 * 60)
-        except Exception:
-            pass
-        return res
-    finally:
-        try:
-            redis.delete(f"lock:indicator:{series}")
-        except Exception:
-            pass
-        db.close()
+        last = int(redis.get(throttle_key) or 0)
+    except Exception:
+        last = 0
+    if now - last < interval_s:
+        return 0
+    try:
+        if not redis.set(lock_key, "1", nx=True, ex=300):
+            return 0
+    except Exception:
+        pass
+    q.enqueue(rebuild_news_clusters_job, job_timeout=900)
+    try:
+        redis.set(throttle_key, str(now), ex=14 * 24 * 3600)
+    except Exception:
+        pass
+    return 1
 
 
 def main() -> None:
@@ -146,6 +149,9 @@ def main() -> None:
             m = enqueue_due_indicators()
             if m:
                 log.info("enqueued indicators", extra={"count": m})
+            k = enqueue_rebuild_news_clusters()
+            if k:
+                log.info("enqueued news cluster rebuild", extra={"count": k})
         except Exception:
             log.exception("scheduler loop failed")
         time.sleep(sleep_s)

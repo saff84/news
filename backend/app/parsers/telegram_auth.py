@@ -21,6 +21,8 @@ async def _main_async() -> None:
     client = TelegramClient(session=session_name, api_id=settings.telegram_api_id, api_hash=settings.telegram_api_hash)
     try:
         # This is intentionally interactive (one-time setup).
+        # Note: Since Feb 2023, Telegram sends codes ONLY to the app (not SMS) for third-party API.
+        print("Sending login code... Check Telegram app (phone/Desktop/web) for the code — SMS is not sent.")
         await client.start(phone=phone)
         me = await client.get_me()
         print(f"Telegram session authorized for: {getattr(me, 'username', None) or getattr(me, 'id', None)}")

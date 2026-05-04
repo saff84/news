@@ -1,16 +1,23 @@
 import * as Dialog from "@radix-ui/react-dialog";
-import { Activity, LayoutTemplate, LineChart, LogOut, Map, Menu, Newspaper, Rss, Users, Wrench, X } from "lucide-react";
+import { Activity, Bot, Building2, CalendarClock, FileText, LayoutTemplate, LineChart, LogOut, Map, Menu, MessageCircle, MessageSquare, MessageSquareMore, Newspaper, Rss, Users, Wrench, X } from "lucide-react";
 import { Navigate, Route, Routes, Link, NavLink, useLocation, useNavigate } from "react-router-dom";
 import { useAuth } from "./state/auth";
 import { LoginPage } from "./pages/LoginPage";
 import { RegionsPage } from "./pages/RegionsPage";
 import { CompetitorsPage } from "./pages/CompetitorsPage";
+import { DevelopersPage } from "./pages/DevelopersPage";
 import { SourcesPage } from "./pages/SourcesPage";
 import { ParsingTemplatesPage } from "./pages/ParsingTemplatesPage";
 import { MonitoringPage } from "./pages/MonitoringPage";
+import { CrawlSchedulePage } from "./pages/CrawlSchedulePage";
 import { DiagnosticsPage } from "./pages/DiagnosticsPage";
 import { IndicatorsPage } from "./pages/IndicatorsPage";
+import { TelegramParserPage } from "./pages/TelegramParserPage";
+import { MaxParserPage } from "./pages/MaxParserPage";
+import { VkParserPage } from "./pages/VkParserPage";
 import { NewsPage } from "./pages/NewsPage";
+import { ReportConfigPage } from "./pages/ReportConfigPage";
+import { AIConfigPage } from "./pages/AIConfigPage";
 
 function MenuLink({
   to,
@@ -58,6 +65,11 @@ function SidebarNav({ variant }: { variant?: "static" | "dialog" }) {
         </MenuLink>,
       )}
       {wrap(
+        <MenuLink to="/developers" icon={<Building2 className="h-4 w-4" />}>
+          Застройщики
+        </MenuLink>,
+      )}
+      {wrap(
         <MenuLink to="/sources" icon={<Rss className="h-4 w-4" />}>
           Источники
         </MenuLink>,
@@ -83,6 +95,31 @@ function SidebarNav({ variant }: { variant?: "static" | "dialog" }) {
         </MenuLink>,
       )}
       {wrap(
+        <MenuLink to="/report-config" icon={<FileText className="h-4 w-4" />}>
+          Отчёт для PDF
+        </MenuLink>,
+      )}
+      {wrap(
+        <MenuLink to="/ai-config" icon={<Bot className="h-4 w-4" />}>
+          Подключение ИИ
+        </MenuLink>,
+      )}
+      {wrap(
+        <MenuLink to="/telegram-parser" icon={<MessageCircle className="h-4 w-4" />}>
+          Telegram-парсер
+        </MenuLink>,
+      )}
+      {wrap(
+        <MenuLink to="/max-parser" icon={<MessageSquareMore className="h-4 w-4" />}>
+          MAX-парсер
+        </MenuLink>,
+      )}
+      {wrap(
+        <MenuLink to="/vk-parser" icon={<MessageSquare className="h-4 w-4" />}>
+          VK-парсер
+        </MenuLink>,
+      )}
+      {wrap(
         <MenuLink to="/diagnostics" icon={<Wrench className="h-4 w-4" />}>
           Диагностика
         </MenuLink>,
@@ -101,11 +138,18 @@ function Shell({ children }: { children: React.ReactNode }) {
   const title = (() => {
     if (loc.pathname.startsWith("/regions")) return "Регионы";
     if (loc.pathname.startsWith("/competitors")) return "Конкуренты";
+    if (loc.pathname.startsWith("/developers")) return "Застройщики";
     if (loc.pathname.startsWith("/sources")) return "Источники";
     if (loc.pathname.startsWith("/parsing-templates")) return "Шаблоны парсинга";
     if (loc.pathname.startsWith("/news")) return "Новости";
+    if (loc.pathname.startsWith("/crawl-schedule")) return "Планировка обхода";
     if (loc.pathname.startsWith("/monitoring")) return "Мониторинг";
     if (loc.pathname.startsWith("/indicators")) return "Индикаторы";
+    if (loc.pathname.startsWith("/report-config")) return "Отчёт для PDF";
+    if (loc.pathname.startsWith("/ai-config")) return "Подключение ИИ";
+    if (loc.pathname.startsWith("/telegram-parser")) return "Telegram-парсер";
+    if (loc.pathname.startsWith("/max-parser")) return "MAX-парсер";
+    if (loc.pathname.startsWith("/vk-parser")) return "VK-парсер";
     if (loc.pathname.startsWith("/diagnostics")) return "Диагностика";
     return "Admin";
   })();
@@ -217,6 +261,16 @@ export function App() {
         }
       />
       <Route
+        path="/developers"
+        element={
+          <RequireAuth>
+            <Shell>
+              <DevelopersPage />
+            </Shell>
+          </RequireAuth>
+        }
+      />
+      <Route
         path="/sources"
         element={
           <RequireAuth>
@@ -247,11 +301,51 @@ export function App() {
         }
       />
       <Route
+        path="/crawl-schedule"
+        element={
+          <RequireAuth>
+            <Shell>
+              <CrawlSchedulePage />
+            </Shell>
+          </RequireAuth>
+        }
+      />
+      <Route
         path="/monitoring"
         element={
           <RequireAuth>
             <Shell>
               <MonitoringPage />
+            </Shell>
+          </RequireAuth>
+        }
+      />
+      <Route
+        path="/telegram-parser"
+        element={
+          <RequireAuth>
+            <Shell>
+              <TelegramParserPage />
+            </Shell>
+          </RequireAuth>
+        }
+      />
+      <Route
+        path="/max-parser"
+        element={
+          <RequireAuth>
+            <Shell>
+              <MaxParserPage />
+            </Shell>
+          </RequireAuth>
+        }
+      />
+      <Route
+        path="/vk-parser"
+        element={
+          <RequireAuth>
+            <Shell>
+              <VkParserPage />
             </Shell>
           </RequireAuth>
         }
@@ -272,6 +366,26 @@ export function App() {
           <RequireAuth>
             <Shell>
               <IndicatorsPage />
+            </Shell>
+          </RequireAuth>
+        }
+      />
+      <Route
+        path="/report-config"
+        element={
+          <RequireAuth>
+            <Shell>
+              <ReportConfigPage />
+            </Shell>
+          </RequireAuth>
+        }
+      />
+      <Route
+        path="/ai-config"
+        element={
+          <RequireAuth>
+            <Shell>
+              <AIConfigPage />
             </Shell>
           </RequireAuth>
         }

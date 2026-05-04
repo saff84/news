@@ -3,10 +3,19 @@ from __future__ import annotations
 import hashlib
 import re
 from dataclasses import dataclass
+from datetime import date, datetime
 from typing import Iterable
 from urllib.parse import parse_qsl, urlparse, urlunparse, urlencode
 
 from bs4 import BeautifulSoup
+
+
+def period_month_from_dt(dt_val: datetime | None, fallback: datetime | None = None) -> date | None:
+    """First day of month for report filtering. Uses dt_val or fallback (e.g. now)."""
+    src = dt_val or fallback
+    if not src:
+        return None
+    return date(src.year, src.month, 1)
 
 
 def canonicalize_url(url: str) -> str:

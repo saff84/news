@@ -15,6 +15,7 @@ if BASE_DIR not in sys.path:
 from app.core.settings import settings
 from app.models.base import Base
 from app.models import auth  # noqa: F401
+from app.models import config as config_models  # noqa: F401
 from app.models import domain  # noqa: F401
 
 config = context.config

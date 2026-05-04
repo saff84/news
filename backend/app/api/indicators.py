@@ -1,8 +1,9 @@
 from __future__ import annotations
 
 import datetime as dt
+import logging
 
-from fastapi import APIRouter, Depends, Query
+from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy.orm import Session
 
 from app.core.deps import require_role
@@ -12,7 +13,7 @@ from app.models.domain import IndicatorDaily, IndicatorSeries
 from app.schemas.indicators import IndicatorHistoryOut, IndicatorLatestOut, IndicatorPointOut
 from app.workers.indicators import fetch_indicator_cny_rub
 
-
+logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/indicators", tags=["indicators"])
 
 
@@ -79,5 +80,18 @@ def cny_rub_collect_now(
     db: Session = Depends(get_db),
     user: User = Depends(require_role(Role.ADMIN)),
 ) -> dict:
-    return fetch_indicator_cny_rub(db)
+    try:
+        return fetch_indicator_cny_rub(db)
+    except RuntimeError as e:
+        logger.warning("MOEX collect failed: %s", e)
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail=str(e) or "MOEX вернул пустые данные (рынок закрыт или недоступен)",
+        )
+    except Exception as e:
+        logger.exception("MOEX collect error")
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail=f"Ошибка при обращении к MOEX: {e!s}",
+        )
 

@@ -32,6 +32,8 @@ class SourceType(str, enum.Enum):
     HTML_DETAIL_ONLY = "HTML_DETAIL_ONLY"
     SITEMAP = "SITEMAP"
     TELEGRAM_CHANNEL = "TELEGRAM_CHANNEL"
+    MAX_CHANNEL = "MAX_CHANNEL"
+    VK_GROUP = "VK_GROUP"
 
 
 class FetchDetailPolicy(str, enum.Enum):
@@ -66,6 +68,18 @@ class Competitor(Base, UUIDPrimaryKeyMixin, TimestampMixin):
     is_active: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
 
 
+class Developer(Base, UUIDPrimaryKeyMixin, TimestampMixin):
+    """Застройщик: отдельно от конкурента; тегирование и отчёты по алиасам."""
+
+    __tablename__ = "developers"
+
+    name: Mapped[str] = mapped_column(String(200), unique=True, nullable=False)
+    aliases: Mapped[list[str]] = mapped_column(ARRAY(String(200)), nullable=False, default=list)
+    tags: Mapped[list[str]] = mapped_column(ARRAY(String(120)), nullable=False, default=list)
+    region_ids: Mapped[list[uuid.UUID]] = mapped_column(ARRAY(UUID(as_uuid=True)), nullable=False, default=list)
+    is_active: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
+
+
 class ParsingTemplate(Base, UUIDPrimaryKeyMixin, TimestampMixin):
     __tablename__ = "parsing_templates"
 
@@ -91,6 +105,7 @@ class Source(Base, UUIDPrimaryKeyMixin, TimestampMixin):
 
     region_tags: Mapped[list[uuid.UUID]] = mapped_column(ARRAY(UUID(as_uuid=True)), nullable=False, default=list)
     competitor_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("competitors.id", ondelete="SET NULL"))
+    developer_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("developers.id", ondelete="SET NULL"))
 
     enabled: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True, index=True)
     fetch_frequency_min: Mapped[int] = mapped_column(Integer, nullable=False, default=60)
@@ -116,10 +131,12 @@ class Source(Base, UUIDPrimaryKeyMixin, TimestampMixin):
     backoff_until: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), index=True)
 
     competitor: Mapped[Competitor | None] = relationship()
+    developer: Mapped[Developer | None] = relationship()
     parsing_template: Mapped[ParsingTemplate | None] = relationship()
 
 
 Index("ix_sources_competitor_id", Source.competitor_id)
+Index("ix_sources_developer_id", Source.developer_id)
 
 
 class RssState(Base, UUIDPrimaryKeyMixin):
@@ -150,11 +167,40 @@ class TgChannelState(Base, UUIDPrimaryKeyMixin):
     source: Mapped[Source] = relationship()
 
 
+class MaxChannelState(Base, UUIDPrimaryKeyMixin):
+    __tablename__ = "max_channels_state"
+
+    source_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("sources.id", ondelete="CASCADE"), unique=True)
+    channel_id: Mapped[str] = mapped_column(String(128), nullable=False)
+    last_message_id: Mapped[str | None] = mapped_column(String(128))
+    last_fetch_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    last_success_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    last_error: Mapped[str | None] = mapped_column(Text)
+    fetched_count_last_run: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+
+    source: Mapped[Source] = relationship()
+
+
+class VkGroupState(Base, UUIDPrimaryKeyMixin):
+    __tablename__ = "vk_groups_state"
+
+    source_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("sources.id", ondelete="CASCADE"), unique=True)
+    group_id: Mapped[str] = mapped_column(String(128), nullable=False)
+    last_post_id: Mapped[int | None] = mapped_column(Integer)
+    last_fetch_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    last_success_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    last_error: Mapped[str | None] = mapped_column(Text)
+    fetched_count_last_run: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+
+    source: Mapped[Source] = relationship()
+
+
 class NewsItem(Base, UUIDPrimaryKeyMixin, TimestampMixin):
     __tablename__ = "news_items"
 
     source_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("sources.id", ondelete="SET NULL"))
     competitor_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("competitors.id", ondelete="SET NULL"))
+    developer_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("developers.id", ondelete="SET NULL"))
 
     url: Mapped[str] = mapped_column(Text, nullable=False)
     canonical_url: Mapped[str] = mapped_column(Text, nullable=False)
@@ -162,6 +208,7 @@ class NewsItem(Base, UUIDPrimaryKeyMixin, TimestampMixin):
     title: Mapped[str | None] = mapped_column(Text)
     author: Mapped[str | None] = mapped_column(String(200))
     published_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), index=True)
+    period_month: Mapped[date | None] = mapped_column(Date, nullable=True, index=True)  # первый день месяца для отчётов
 
     snippet: Mapped[str | None] = mapped_column(Text)
     content_text: Mapped[str | None] = mapped_column(Text)
@@ -174,11 +221,13 @@ class NewsItem(Base, UUIDPrimaryKeyMixin, TimestampMixin):
     region_ids: Mapped[list[uuid.UUID]] = mapped_column(ARRAY(UUID(as_uuid=True)), nullable=False, default=list)
     topic_tags: Mapped[list[str]] = mapped_column(ARRAY(String(120)), nullable=False, default=list)
     competitor_mentions: Mapped[list[uuid.UUID]] = mapped_column(ARRAY(UUID(as_uuid=True)), nullable=False, default=list)
+    developer_mentions: Mapped[list[uuid.UUID]] = mapped_column(ARRAY(UUID(as_uuid=True)), nullable=False, default=list)
 
     raw_html_path: Mapped[str | None] = mapped_column(Text)
 
     source: Mapped[Source | None] = relationship()
     competitor: Mapped[Competitor | None] = relationship()
+    developer: Mapped[Developer | None] = relationship()
 
     __table_args__ = (
         UniqueConstraint("canonical_url", name="uq_news_items_canonical_url"),

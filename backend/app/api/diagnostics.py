@@ -11,8 +11,10 @@ from sqlalchemy.orm import Session
 from app.core.deps import require_role
 from app.db import get_db
 from app.models.auth import Role, User
+from app.models.domain import Source
+from app.api.monitoring import build_monitoring_alerts, summarize_monitoring_alerts
 from app.schemas.diagnostics import DiagnosticsOverviewOut, EnqueueRunOut, JobStatusOut
-from app.workers.jobs import fetch_source
+from app.workers.jobs import fetch_source, rebuild_news_clusters_job
 from app.workers.queue import get_queue, get_redis
 
 router = APIRouter(prefix="/diagnostics", tags=["diagnostics"])
@@ -47,13 +49,38 @@ def overview(
     except Exception:
         redis_ok = False
 
+    alert_critical_count = 0
+    alert_warning_count = 0
+    try:
+        sources = db.query(Source).filter(Source.enabled.is_(True)).all()
+        alerts = build_monitoring_alerts(sources, now=now)
+        critical, warning, _ = summarize_monitoring_alerts(alerts)
+        alert_critical_count = critical
+        alert_warning_count = warning
+    except Exception:
+        # diagnostics endpoint should stay resilient even if alert calculations fail
+        alert_critical_count = 0
+        alert_warning_count = 0
+
     return DiagnosticsOverviewOut(
         now=now,
         db_ok=db_ok,
         redis_ok=redis_ok,
         rq_default_queue_count=int(rq_count),
         alembic_version=alembic_version,
+        alert_critical_count=alert_critical_count,
+        alert_warning_count=alert_warning_count,
     )
+
+
+@router.post("/rebuild-news-clusters", response_model=EnqueueRunOut)
+def rebuild_news_clusters_enqueue(
+    user: User = Depends(require_role(Role.ADMIN)),
+) -> EnqueueRunOut:
+    """Поставить в очередь пересборку кластеров похожих новостей (simhash) за последние ~90 дней."""
+    q = get_queue("default")
+    job = q.enqueue(rebuild_news_clusters_job, job_timeout=900)
+    return EnqueueRunOut(job_id=job.id)
 
 
 @router.post("/sources/{source_id}/run-now", response_model=EnqueueRunOut)

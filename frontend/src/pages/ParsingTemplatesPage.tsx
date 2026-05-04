@@ -2,7 +2,7 @@ import { useEffect, useState } from "react";
 import { api, type ParsingTemplateOut } from "../lib/api";
 import { useAuth } from "../state/auth";
 import { useToast } from "../state/toast";
-import { HelpText, HintBox } from "../components/Field";
+import { HelpText, HintBox, InstructionBox } from "../components/Field";
 
 type TemplateForm = {
   name: string;
@@ -67,10 +67,78 @@ export function ParsingTemplatesPage() {
       <div className="flex items-start justify-between gap-4">
         <div>
           <h1 className="text-lg font-semibold">Шаблоны парсинга (HTML)</h1>
-          <p className="mt-1 text-sm text-slate-600">Шаблон — это JSON с CSS-селекторами и правилами очистки. Его можно тестировать на URL без добавления источника.</p>
+          <p className="mt-1 text-sm text-slate-600">
+            Шаблон — JSON с CSS-селекторами для <b>детальной страницы</b> статьи и опционально для <b>списка ссылок</b>. Его привязывают к источнику типа «HTML: список→деталь» или «только деталь».
+          </p>
           <HintBox>
-            Минимально поддерживаемый формат для теста: <code className="rounded bg-white px-1">detail.title/date/author/body</code> + <code className="rounded bg-white px-1">cleanup.remove_css</code>.
+            Минимальный рабочий тест: блок <code className="rounded bg-white px-1">detail</code> (поля <code className="rounded bg-white px-1">title</code>, <code className="rounded bg-white px-1">date</code>,{" "}
+            <code className="rounded bg-white px-1">body</code>) и <code className="rounded bg-white px-1">cleanup.remove_css</code> — чтобы убрать меню и рекламу до извлечения текста.
           </HintBox>
+          <InstructionBox title="Как пользоваться (пошагово)">
+            <ol className="list-decimal space-y-2 pl-5 text-sm text-slate-700">
+              <li>
+                Откройте <b>одну типичную статью</b> на целевом сайте в браузере и скопируйте её URL — его используют в «Тест шаблона».
+              </li>
+              <li>
+                В DevTools посмотрите, где лежат заголовок (<code>h1</code>), дата (<code>time</code> с атрибутом <code>datetime</code>), основной текст (<code>article</code>, <code>.content</code> и т.д.).
+              </li>
+              <li>
+                Соберите JSON: для каждого поля укажите <code>css</code> (селектор) и при необходимости <code>attr</code> (например <code>datetime</code> для даты вместо видимого текста).
+              </li>
+              <li>
+                Нажмите <b>Протестировать</b> — в ответе должны быть непустые <code>title</code>, <code>body_text</code> и по возможности <code>published_at</code>.
+              </li>
+              <li>
+                Для источника «список→деталь» добавьте блок <code>list</code> (см. ниже), сохраните шаблон и выберите его в карточке источника на странице «Источники».
+              </li>
+            </ol>
+          </InstructionBox>
+          <InstructionBox title="Справочник полей JSON">
+            <div className="space-y-3 text-sm text-slate-700">
+              <div>
+                <div className="font-medium text-slate-800">detail.* — одна статья (обязательно для любого HTML-источника с шаблоном)</div>
+                <ul className="mt-1 list-disc space-y-1 pl-4">
+                  <li>
+                    <code>detail.title</code>, <code>detail.date</code>, <code>detail.author</code>, <code>detail.body</code> — объекты вида{" "}
+                    <code>{`{ "css": "селектор", "attr": "опционально атрибут" }`}</code>. Если <code>attr</code> задан, берётся значение атрибута элемента, иначе — видимый текст.
+                  </li>
+                  <li>
+                    <code>detail.body</code> — контейнер основного текста; из него строится вступление/полный текст новости. Если текста мало, бэкенд может подключить readability как запасной вариант.
+                  </li>
+                </ul>
+              </div>
+              <div>
+                <div className="font-medium text-slate-800">cleanup — подготовка DOM</div>
+                <ul className="mt-1 list-disc space-y-1 pl-4">
+                  <li>
+                    <code>cleanup.remove_css</code> — массив селекторов узлов, которые удаляются <b>до</b> чтения полей (шапка, сайдбар, блок «поделиться», подписка).
+                  </li>
+                </ul>
+              </div>
+              <div>
+                <div className="font-medium text-slate-800">list — только для режима «HTML: список → деталь»</div>
+                <ul className="mt-1 list-disc space-y-1 pl-4">
+                  <li>
+                    <code>list.item_links_css</code> — селектор элементов <b>ссылок</b> на статьи (часто <code>article a</code>, <code>.news-list a</code>). По найденным <code>href</code> открываются детальные страницы и к ним применяется <code>detail</code>.
+                  </li>
+                  <li>
+                    <code>list.next_page_css</code> — опционально: селектор ссылки «следующая страница» для листинга.
+                  </li>
+                  <li>
+                    <code>list.max_pages</code> — сколько страниц списка обойти (по умолчанию 1).
+                  </li>
+                </ul>
+              </div>
+              <div>
+                <div className="font-medium text-slate-800">Прочее</div>
+                <ul className="mt-1 list-disc space-y-1 pl-4">
+                  <li>
+                    <code>min_fulltext_length</code> — если вытащенный <code>body</code> короче этого числа символов, пробуется запасной режим readability.
+                  </li>
+                </ul>
+              </div>
+            </div>
+          </InstructionBox>
         </div>
         {canWrite ? (
           <button
