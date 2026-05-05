@@ -28,14 +28,16 @@ services:
   migrate:
     build:
       context: ./backend
+    env_file:
+      - .env
     environment:
-      APP_ENV: dev
-      DATABASE_URL: postgresql+psycopg://newsint:newsint@db:5432/newsint
-      REDIS_URL: redis://redis:6379/0
-      SECRET_KEY: "dev-change-me"
-      STORAGE_DIR: "/data/storage"
+      APP_ENV: ${APP_ENV:-dev}
+      DATABASE_URL: ${DATABASE_URL:-postgresql+psycopg://newsint:newsint@db:5432/newsint}
+      REDIS_URL: ${REDIS_URL:-redis://redis:6379/0}
+      SECRET_KEY: ${SECRET_KEY:-dev-change-me}
+      STORAGE_DIR: ${STORAGE_DIR:-/data/storage}
       PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD: "1"
-      TELEGRAM_SESSION_DIR: "/data/tg"
+      TELEGRAM_SESSION_DIR: ${TELEGRAM_SESSION_DIR:-/data/tg}
       TELEGRAM_API_ID: ${TELEGRAM_API_ID:-}
       TELEGRAM_API_HASH: ${TELEGRAM_API_HASH:-}
       TELEGRAM_PHONE: ${TELEGRAM_PHONE:-}
@@ -59,21 +61,23 @@ services:
   backend:
     build:
       context: ./backend
+    env_file:
+      - .env
     environment:
-      APP_ENV: dev
-      DATABASE_URL: postgresql+psycopg://newsint:newsint@db:5432/newsint
-      REDIS_URL: redis://redis:6379/0
-      SECRET_KEY: "dev-change-me"
-      ACCESS_TOKEN_TTL_MIN: "30"
-      REFRESH_TOKEN_TTL_DAYS: "14"
+      APP_ENV: ${APP_ENV:-dev}
+      DATABASE_URL: ${DATABASE_URL:-postgresql+psycopg://newsint:newsint@db:5432/newsint}
+      REDIS_URL: ${REDIS_URL:-redis://redis:6379/0}
+      SECRET_KEY: ${SECRET_KEY:-dev-change-me}
+      ACCESS_TOKEN_TTL_MIN: ${ACCESS_TOKEN_TTL_MIN:-30}
+      REFRESH_TOKEN_TTL_DAYS: ${REFRESH_TOKEN_TTL_DAYS:-14}
       # Comma-separated list is supported by backend settings parsing.
       # Configure via `.env` next to this compose file:
       # - PUBLIC_HOST=your.domain_or_ip
       # - or set UI_ORIGIN / API_PUBLIC_URL explicitly
-      CORS_ORIGINS: "http://localhost:5173,http://127.0.0.1:5173,http://${PUBLIC_HOST:-localhost}:5173"
-      STORAGE_DIR: "/data/storage"
+      CORS_ORIGINS: ${CORS_ORIGINS:-http://localhost:5173,http://127.0.0.1:5173,http://${PUBLIC_HOST:-localhost}:5173}
+      STORAGE_DIR: ${STORAGE_DIR:-/data/storage}
       PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD: "1"
-      TELEGRAM_SESSION_DIR: "/data/tg"
+      TELEGRAM_SESSION_DIR: ${TELEGRAM_SESSION_DIR:-/data/tg}
       TELEGRAM_API_ID: ${TELEGRAM_API_ID:-}
       TELEGRAM_API_HASH: ${TELEGRAM_API_HASH:-}
       TELEGRAM_PHONE: ${TELEGRAM_PHONE:-}
@@ -99,13 +103,15 @@ services:
   worker:
     build:
       context: ./backend
+    env_file:
+      - .env
     environment:
-      APP_ENV: dev
-      DATABASE_URL: postgresql+psycopg://newsint:newsint@db:5432/newsint
-      REDIS_URL: redis://redis:6379/0
-      SECRET_KEY: "dev-change-me"
-      STORAGE_DIR: "/data/storage"
-      TELEGRAM_SESSION_DIR: "/data/tg"
+      APP_ENV: ${APP_ENV:-dev}
+      DATABASE_URL: ${DATABASE_URL:-postgresql+psycopg://newsint:newsint@db:5432/newsint}
+      REDIS_URL: ${REDIS_URL:-redis://redis:6379/0}
+      SECRET_KEY: ${SECRET_KEY:-dev-change-me}
+      STORAGE_DIR: ${STORAGE_DIR:-/data/storage}
+      TELEGRAM_SESSION_DIR: ${TELEGRAM_SESSION_DIR:-/data/tg}
       TELEGRAM_API_ID: ${TELEGRAM_API_ID:-}
       TELEGRAM_API_HASH: ${TELEGRAM_API_HASH:-}
       TELEGRAM_PHONE: ${TELEGRAM_PHONE:-}
@@ -133,18 +139,20 @@ services:
       - manual
     build:
       context: ./backend
+    env_file:
+      - .env
     environment:
-      APP_ENV: dev
-      DATABASE_URL: postgresql+psycopg://newsint:newsint@db:5432/newsint
-      REDIS_URL: redis://redis:6379/0
-      SECRET_KEY: "dev-change-me"
-      STORAGE_DIR: "/data/storage"
+      APP_ENV: ${APP_ENV:-dev}
+      DATABASE_URL: ${DATABASE_URL:-postgresql+psycopg://newsint:newsint@db:5432/newsint}
+      REDIS_URL: ${REDIS_URL:-redis://redis:6379/0}
+      SECRET_KEY: ${SECRET_KEY:-dev-change-me}
+      STORAGE_DIR: ${STORAGE_DIR:-/data/storage}
       MAX_API_BASE: ${MAX_API_BASE:-https://platform-api.max.ru}
       MAX_BOT_TOKEN: ${MAX_BOT_TOKEN:-}
       VK_API_BASE: ${VK_API_BASE:-https://api.vk.com/method}
       VK_API_VERSION: ${VK_API_VERSION:-5.199}
       VK_ACCESS_TOKEN: ${VK_ACCESS_TOKEN:-}
-      TELEGRAM_SESSION_DIR: "/data/tg"
+      TELEGRAM_SESSION_DIR: ${TELEGRAM_SESSION_DIR:-/data/tg}
       TELEGRAM_API_ID: ${TELEGRAM_API_ID:-}
       TELEGRAM_API_HASH: ${TELEGRAM_API_HASH:-}
       TELEGRAM_PHONE: ${TELEGRAM_PHONE:-}
@@ -160,12 +168,14 @@ services:
   scheduler:
     build:
       context: ./backend
+    env_file:
+      - .env
     environment:
-      APP_ENV: dev
-      DATABASE_URL: postgresql+psycopg://newsint:newsint@db:5432/newsint
-      REDIS_URL: redis://redis:6379/0
-      SECRET_KEY: "dev-change-me"
-      STORAGE_DIR: "/data/storage"
+      APP_ENV: ${APP_ENV:-dev}
+      DATABASE_URL: ${DATABASE_URL:-postgresql+psycopg://newsint:newsint@db:5432/newsint}
+      REDIS_URL: ${REDIS_URL:-redis://redis:6379/0}
+      SECRET_KEY: ${SECRET_KEY:-dev-change-me}
+      STORAGE_DIR: ${STORAGE_DIR:-/data/storage}
     command: ["sh", "-lc", "python -m app.workers.scheduler"]
     volumes:
       - storage:/data/storage
