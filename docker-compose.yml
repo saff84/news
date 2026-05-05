@@ -192,10 +192,10 @@ services:
       context: ./frontend
       dockerfile: Dockerfile.nginx
       args:
-        # Baked at frontend build time.
-        VITE_API_BASE_URL: "${API_PUBLIC_URL:-http://${PUBLIC_HOST:-localhost}:8000}"
+        # Use same-origin API via nginx proxy on /api.
+        VITE_API_BASE_URL: "${API_PUBLIC_URL:-/api}"
     ports:
-      - "5173:5173"
+      - "80:80"
     depends_on:
       backend:
         condition: service_started
