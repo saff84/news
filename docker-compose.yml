@@ -184,6 +184,8 @@ services:
       # NOTE: Vite reads this at dev-server startup; must be reachable from the user's browser.
       # Defaults to PUBLIC_HOST if API_PUBLIC_URL is not set.
       VITE_API_BASE_URL: "${API_PUBLIC_URL:-http://${PUBLIC_HOST:-localhost}:8000}"
+    # Use production bundle + preview server to avoid remote HMR/dev-server issues.
+    command: ["sh", "-lc", "npm run build && npm run preview -- --host 0.0.0.0 --port 5173"]
     ports:
       - "5173:5173"
     depends_on:
