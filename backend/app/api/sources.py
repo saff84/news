@@ -10,6 +10,7 @@ from app.core.deps import get_request_meta, require_role
 from app.db import get_db
 from app.models.auth import Role, User
 from app.models.domain import MaxChannelState, NewsItem, RssState, Source, SourceType, TgChannelState, VkGroupState
+from app.services.news_entity_sync import sync_news_entity_links_from_sources
 from app.services.news_filter_config import news_item_search_text, should_keep_news_item
 from app.schemas.sources import SourceCreate, SourceListOut, SourceOut, SourceUpdate
 from app.services.audit import write_audit_log
@@ -190,10 +191,14 @@ def update_source(
         s.tg_channel_username = payload.tg_channel_username.lstrip("@") if payload.tg_channel_username else None
     if payload.region_tags is not None:
         s.region_tags = payload.region_tags
-    if payload.competitor_id is not None:
+    link_fields_changed = False
+    fields_set = payload.model_fields_set
+    if "competitor_id" in fields_set:
         s.competitor_id = payload.competitor_id
-    if payload.developer_id is not None:
+        link_fields_changed = True
+    if "developer_id" in fields_set:
         s.developer_id = payload.developer_id
+        link_fields_changed = True
     if payload.enabled is not None:
         s.enabled = payload.enabled
     if payload.fetch_frequency_min is not None:
@@ -239,7 +244,14 @@ def update_source(
         else:
             exists.group_id = vk_group_id
 
+    sync_stats = None
+    if link_fields_changed:
+        sync_stats = sync_news_entity_links_from_sources(db, source_id=s.id, overwrite=False)
+
     meta = get_request_meta(request)
+    audit_meta = payload.model_dump(exclude_none=True, mode="json")
+    if sync_stats:
+        audit_meta["news_entity_sync"] = sync_stats
     write_audit_log(
         db,
         actor_user_id=user.id,
@@ -248,11 +260,25 @@ def update_source(
         entity_id=str(s.id),
         ip=meta["ip"],
         user_agent=meta["user_agent"],
-        meta=payload.model_dump(exclude_none=True, mode="json"),
+        meta=audit_meta,
     )
     db.commit()
     db.refresh(s)
     return SourceOut.model_validate(s, from_attributes=True)
+
+
+@router.post("/{source_id}/sync-entity-links")
+def sync_entity_links_for_source(
+    source_id: uuid.UUID,
+    overwrite: bool = Query(default=False),
+    db: Session = Depends(get_db),
+    user: User = Depends(require_role(Role.ADMIN)),
+) -> dict:
+    """Синхронизировать привязки конкурент/застройщик у всех новостей этого источника."""
+    s = db.get(Source, source_id)
+    if not s:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Source not found")
+    return sync_news_entity_links_from_sources(db, source_id=source_id, overwrite=overwrite)
 
 
 @router.post("/{source_id}/cleanup-news")

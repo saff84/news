@@ -90,6 +90,8 @@ export function SourcesPage() {
   const [modalOpen, setModalOpen] = useState(false);
   const [editing, setEditing] = useState<SourceOut | null>(null);
   const [form, setForm] = useState<SourceForm>(() => toForm());
+  const [syncingAll, setSyncingAll] = useState(false);
+  const [syncingSource, setSyncingSource] = useState(false);
 
   const reload = async () => {
     if (!accessToken) return;
@@ -353,16 +355,48 @@ export function SourcesPage() {
           </HintBox>
         </div>
         {canWrite ? (
-          <button
-            className="rounded bg-slate-900 px-3 py-2 text-sm text-white hover:bg-slate-800"
-            onClick={() => {
-              setEditing(null);
-              setForm(toForm());
-              setModalOpen(true);
-            }}
-          >
-            Добавить источник
-          </button>
+          <div className="flex shrink-0 flex-col items-end gap-2 sm:flex-row sm:items-center">
+            <button
+              type="button"
+              className="rounded border border-slate-300 bg-white px-3 py-2 text-sm text-slate-800 hover:bg-slate-50 disabled:opacity-50"
+              disabled={syncingAll}
+              onClick={async () => {
+                if (!accessToken) return;
+                if (
+                  !confirm(
+                    "Проставить конкурента/застройщика на старых новостях из карточек источников?\n\nРежим: только пустые поля на новостях (без перезаписи).",
+                  )
+                ) {
+                  return;
+                }
+                setSyncingAll(true);
+                try {
+                  const res = await api.news.syncEntityLinks(accessToken);
+                  push({
+                    variant: "success",
+                    title: "Синхронизация завершена",
+                    description: `Проверено ${res.checked} новостей, застройщик: ${res.updated_developer}, конкурент: ${res.updated_competitor} (источников: ${res.sources_touched})`,
+                  });
+                } catch (e: any) {
+                  push({ variant: "error", title: "Ошибка синхронизации", description: e?.message || "Ошибка" });
+                } finally {
+                  setSyncingAll(false);
+                }
+              }}
+            >
+              {syncingAll ? "Синхронизация…" : "Синхр. привязки (все источники)"}
+            </button>
+            <button
+              className="rounded bg-slate-900 px-3 py-2 text-sm text-white hover:bg-slate-800"
+              onClick={() => {
+                setEditing(null);
+                setForm(toForm());
+                setModalOpen(true);
+              }}
+            >
+              Добавить источник
+            </button>
+          </div>
         ) : null}
       </div>
 
@@ -714,6 +748,70 @@ export function SourcesPage() {
                   </select>
                   <HelpText>Отдельно от конкурента: раздел «Застройщики» в отчёте и теги в тексте.</HelpText>
                 </label>
+                {editing && isAdmin ? (
+                  <div className="md:col-span-2 rounded border border-sky-200 bg-sky-50 p-3 text-sm">
+                    <div className="font-medium text-slate-800">Привязка на старых новостях</div>
+                    <p className="mt-1 text-xs text-slate-600">
+                      После сохранения конкурента/застройщика пустые поля на новостях этого источника заполняются автоматически.
+                      Если связь меняли давно — нажмите кнопку ниже (с перезаписью — если нужно заменить уже проставленные id).
+                    </p>
+                    <div className="mt-2 flex flex-wrap gap-2">
+                      <button
+                        type="button"
+                        className="rounded border border-sky-300 bg-white px-3 py-1.5 text-sm hover:bg-sky-100 disabled:opacity-50"
+                        disabled={syncingSource}
+                        onClick={async () => {
+                          if (!accessToken || !editing) return;
+                          setSyncingSource(true);
+                          try {
+                            const res = await api.sources.syncEntityLinks(accessToken, editing.id, false);
+                            push({
+                              variant: "success",
+                              title: "Синхронизация",
+                              description: `Проверено ${res.checked}, обновлено: застройщик ${res.updated_developer}, конкурент ${res.updated_competitor}`,
+                            });
+                          } catch (e: any) {
+                            push({ variant: "error", title: "Ошибка", description: e?.message || "Ошибка" });
+                          } finally {
+                            setSyncingSource(false);
+                          }
+                        }}
+                      >
+                        {syncingSource ? "…" : "Синхр. только пустые"}
+                      </button>
+                      <button
+                        type="button"
+                        className="rounded border border-amber-300 bg-amber-50 px-3 py-1.5 text-sm text-amber-900 hover:bg-amber-100 disabled:opacity-50"
+                        disabled={syncingSource}
+                        onClick={async () => {
+                          if (!accessToken || !editing) return;
+                          if (
+                            !confirm(
+                              "Перезаписать competitor_id / developer_id у всех новостей этого источника значениями с карточки (в т.ч. очистить, если связь снята)?",
+                            )
+                          ) {
+                            return;
+                          }
+                          setSyncingSource(true);
+                          try {
+                            const res = await api.sources.syncEntityLinks(accessToken, editing.id, true);
+                            push({
+                              variant: "success",
+                              title: "Синхронизация с перезаписью",
+                              description: `Проверено ${res.checked}, обновлено: застройщик ${res.updated_developer}, конкурент ${res.updated_competitor}`,
+                            });
+                          } catch (e: any) {
+                            push({ variant: "error", title: "Ошибка", description: e?.message || "Ошибка" });
+                          } finally {
+                            setSyncingSource(false);
+                          }
+                        }}
+                      >
+                        С перезаписью
+                      </button>
+                    </div>
+                  </div>
+                ) : null}
                 {needsTemplate ? (
                   <label className="block">
                     <div className="text-sm text-slate-700">Шаблон парсинга</div>

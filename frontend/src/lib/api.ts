@@ -200,6 +200,15 @@ export type NewsItemOut = {
   updated_at: string;
 };
 
+export type NewsEntitySyncOut = {
+  checked: number;
+  updated_developer: number;
+  updated_competitor: number;
+  sources_touched: number;
+  overwrite: boolean;
+  source_id: string | null;
+};
+
 export type MaxParserStatusOut = {
   token_configured: boolean;
   token_source: string;
@@ -326,6 +335,13 @@ export const api = {
     },
     delete: (accessToken: string, id: string) =>
       request<void>(`/api/news/${id}`, { method: "DELETE" }, accessToken),
+    syncEntityLinks: (accessToken: string, params?: { source_id?: string; overwrite?: boolean }) => {
+      const sp = new URLSearchParams();
+      if (params?.source_id) sp.set("source_id", params.source_id);
+      if (params?.overwrite) sp.set("overwrite", "true");
+      const qs = sp.toString() ? `?${sp.toString()}` : "";
+      return request<NewsEntitySyncOut>(`/api/news/sync-entity-links${qs}`, { method: "POST" }, accessToken);
+    },
   },
   regions: {
     list: (accessToken: string, q?: string) => {
@@ -386,6 +402,10 @@ export const api = {
       request<void>(`/api/sources/${id}`, { method: "DELETE" }, accessToken),
     cleanupNews: (accessToken: string, sourceId: string) =>
       request<{ deleted: number; total_checked: number }>(`/api/sources/${sourceId}/cleanup-news`, { method: "POST" }, accessToken),
+    syncEntityLinks: (accessToken: string, sourceId: string, overwrite = false) => {
+      const qs = overwrite ? "?overwrite=true" : "";
+      return request<NewsEntitySyncOut>(`/api/sources/${sourceId}/sync-entity-links${qs}`, { method: "POST" }, accessToken);
+    },
   },
   templates: {
     test: (accessToken: string, url: string, template_json: any) =>

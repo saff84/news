@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import uuid
 from collections import defaultdict
 from datetime import date, datetime, timedelta, timezone
 from typing import Any, Callable
@@ -20,6 +21,7 @@ from app.models.domain import (
     NewsItemCluster,
     ParsedIndicator,
     Region,
+    Source,
 )
 from app.schemas.report_sections import REPORT_SECTION_JSON_INSTRUCTION
 from app.services.ai_client import AIValidationError, call_provider
@@ -144,6 +146,71 @@ def _simple_news_summary_linked(items: list, *, title: str) -> str:
     return "\n".join(lines)
 
 
+def _load_source_entity_maps(db: Session, news: list) -> tuple[dict[uuid.UUID, uuid.UUID], dict[uuid.UUID, uuid.UUID]]:
+    """developer_id / competitor_id с карточки источника (для старых новостей без поля на записи)."""
+    source_ids = {n.source_id for n in news if n.source_id}
+    if not source_ids:
+        return {}, {}
+    rows = (
+        db.query(Source.id, Source.developer_id, Source.competitor_id)
+        .filter(Source.id.in_(source_ids))
+        .all()
+    )
+    dev_map = {r.id: r.developer_id for r in rows if r.developer_id}
+    comp_map = {r.id: r.competitor_id for r in rows if r.competitor_id}
+    return dev_map, comp_map
+
+
+def _primary_developer_id(n: NewsItem, source_dev_map: dict[uuid.UUID, uuid.UUID]) -> uuid.UUID | None:
+    if n.developer_id:
+        return n.developer_id
+    if n.source_id:
+        return source_dev_map.get(n.source_id)
+    return None
+
+
+def _primary_competitor_id(n: NewsItem, source_comp_map: dict[uuid.UUID, uuid.UUID]) -> uuid.UUID | None:
+    if n.competitor_id:
+        return n.competitor_id
+    if n.source_id:
+        return source_comp_map.get(n.source_id)
+    return None
+
+
+def _is_developer_news(n: NewsItem, source_dev_map: dict[uuid.UUID, uuid.UUID]) -> bool:
+    if _primary_developer_id(n, source_dev_map):
+        return True
+    return bool(n.developer_mentions and len(n.developer_mentions) > 0)
+
+
+def _is_competitor_news(n: NewsItem, source_comp_map: dict[uuid.UUID, uuid.UUID]) -> bool:
+    if _primary_competitor_id(n, source_comp_map):
+        return True
+    return bool(n.competitor_mentions and len(n.competitor_mentions) > 0)
+
+
+def _developers_with_enabled_sources(db: Session) -> dict[str, list]:
+    rows = (
+        db.query(Developer.name)
+        .join(Source, Source.developer_id == Developer.id)
+        .filter(Source.enabled.is_(True), Developer.is_active.is_(True))
+        .distinct()
+        .all()
+    )
+    return {r.name: [] for r in rows}
+
+
+def _competitors_with_enabled_sources(db: Session) -> dict[str, list]:
+    rows = (
+        db.query(Competitor.name)
+        .join(Source, Source.competitor_id == Competitor.id)
+        .filter(Source.enabled.is_(True), Competitor.is_active.is_(True))
+        .distinct()
+        .all()
+    )
+    return {r.name: [] for r in rows}
+
+
 def _group_competitor_news(news: list, competitors_map: dict[str, str]) -> dict[str, list]:
     out: dict[str, list] = defaultdict(list)
     for n in news:
@@ -157,14 +224,25 @@ def _group_competitor_news(news: list, competitors_map: dict[str, str]) -> dict[
     return dict(out)
 
 
-def _group_developer_news(news: list, developers_map: dict[str, str]) -> dict[str, list]:
-    """Только primary developer_id — без дублирования в чужие карточки по mentions."""
+def _group_developer_news(
+    news: list,
+    developers_map: dict[str, str],
+    source_dev_map: dict[uuid.UUID, uuid.UUID],
+) -> dict[str, list]:
+    """
+    Сначала primary: developer_id на новости или developer_id источника (канал Самолёт и т.д.).
+    Если primary нет — по developer_mentions (как у конкурентов).
+    """
     out: dict[str, list] = defaultdict(list)
     for n in news:
-        if not n.developer_id:
+        pid = _primary_developer_id(n, source_dev_map)
+        if pid:
+            dname = developers_map.get(str(pid), str(pid))
+            out[dname].append(n)
             continue
-        dname = developers_map.get(str(n.developer_id), str(n.developer_id))
-        out[dname].append(n)
+        for did in n.developer_mentions or []:
+            dname = developers_map.get(str(did), str(did))
+            out[dname].append(n)
     return dict(out)
 
 
@@ -273,9 +351,7 @@ def get_report_data_for_pdf(
     news = raw["news"]
     regions_list = raw["regions"]
     region_map = {str(r.id): r.name for r in regions_list}
-
-    # Load sources and competitors for news
-    from app.models.domain import Source
+    source_dev_map, source_comp_map = _load_source_entity_maps(db, news)
 
     source_ids = {n.source_id for n in news if n.source_id}
     sources_map: dict[str, str] = {}
@@ -285,45 +361,47 @@ def get_report_data_for_pdf(
                 s.name or s.base_url or s.feed_url or (f"@{s.tg_channel_username}" if s.tg_channel_username else str(s.id))
             )
 
-    competitor_ids = set()
+    competitor_ids: set[uuid.UUID] = set()
     for n in news:
-        if n.competitor_id:
-            competitor_ids.add(n.competitor_id)
+        pid_c = _primary_competitor_id(n, source_comp_map)
+        if pid_c:
+            competitor_ids.add(pid_c)
         competitor_ids.update(n.competitor_mentions or [])
+    competitor_ids.update(source_comp_map.values())
     competitors_map: dict[str, str] = {}
     if competitor_ids:
         for c in db.query(Competitor).filter(Competitor.id.in_(competitor_ids)).all():
             competitors_map[str(c.id)] = c.name or str(c.id)
 
-    developer_ids: set = set()
+    developer_ids: set[uuid.UUID] = set()
     for n in news:
-        if n.developer_id:
-            developer_ids.add(n.developer_id)
+        pid_d = _primary_developer_id(n, source_dev_map)
+        if pid_d:
+            developer_ids.add(pid_d)
         developer_ids.update(n.developer_mentions or [])
+    developer_ids.update(source_dev_map.values())
     developers_map: dict[str, str] = {}
     if developer_ids:
         for d in db.query(Developer).filter(Developer.id.in_(developer_ids)).all():
             developers_map[str(d.id)] = d.name or str(d.id)
 
-    # Новости конкурентов — по компании (новость может быть в нескольких компаниях)
-    news_by_competitor: dict[str, list] = {}
-    news_by_developer: dict[str, list] = {}
+    news_by_competitor = _group_competitor_news(
+        [n for n in news if _is_competitor_news(n, source_comp_map)],
+        competitors_map,
+    )
+    news_by_developer = _group_developer_news(
+        [n for n in news if _is_developer_news(n, source_dev_map)],
+        developers_map,
+        source_dev_map,
+    )
+    for name, empty in _competitors_with_enabled_sources(db).items():
+        news_by_competitor.setdefault(name, empty)
+    for name, empty in _developers_with_enabled_sources(db).items():
+        news_by_developer.setdefault(name, empty)
+
     news_general: list = []
     for n in news:
-        has_c = bool(n.competitor_id or (n.competitor_mentions and len(n.competitor_mentions) > 0))
-        has_d = bool(n.developer_id)
-        if has_c:
-            cids = set()
-            if n.competitor_id:
-                cids.add(n.competitor_id)
-            cids.update(n.competitor_mentions or [])
-            for cid in cids:
-                cname = competitors_map.get(str(cid), str(cid))
-                news_by_competitor.setdefault(cname, []).append(n)
-        if has_d and n.developer_id:
-            dname = developers_map.get(str(n.developer_id), str(n.developer_id))
-            news_by_developer.setdefault(dname, []).append(n)
-        if not has_c and not has_d:
+        if not _is_competitor_news(n, source_comp_map) and not _is_developer_news(n, source_dev_map):
             news_general.append(n)
 
     # Group news by region
@@ -592,36 +670,37 @@ def generate_report(
             return f"[Ошибка ИИ: {err}]", None
 
     all_news = raw["news"]
-    competitor_news = [n for n in all_news if n.competitor_id or (n.competitor_mentions and len(n.competitor_mentions) > 0)]
-    developer_news = [n for n in all_news if n.developer_id]
+    source_dev_map, source_comp_map = _load_source_entity_maps(db, all_news)
+
+    competitor_news = [n for n in all_news if _is_competitor_news(n, source_comp_map)]
+    developer_news = [n for n in all_news if _is_developer_news(n, source_dev_map)]
     general_news = [
         n
         for n in all_news
-        if not (
-            n.competitor_id
-            or (n.competitor_mentions and len(n.competitor_mentions) > 0)
-            or n.developer_id
-            or (n.developer_mentions and len(n.developer_mentions) > 0)
-        )
+        if not _is_competitor_news(n, source_comp_map) and not _is_developer_news(n, source_dev_map)
     ]
 
     competitor_names_map: dict[str, str] = {}
-    if competitor_news:
-        c_ids = set()
-        for n in competitor_news:
-            if n.competitor_id:
-                c_ids.add(n.competitor_id)
-            c_ids.update(n.competitor_mentions or [])
+    c_ids: set[uuid.UUID] = set()
+    for n in competitor_news:
+        pid_c = _primary_competitor_id(n, source_comp_map)
+        if pid_c:
+            c_ids.add(pid_c)
+        c_ids.update(n.competitor_mentions or [])
+    c_ids.update(source_comp_map.values())
+    if c_ids:
         for c in db.query(Competitor).filter(Competitor.id.in_(c_ids)).all():
             competitor_names_map[str(c.id)] = c.name or str(c.id)
 
     developer_names_map: dict[str, str] = {}
-    if developer_news:
-        d_ids = set()
-        for n in developer_news:
-            if n.developer_id:
-                d_ids.add(n.developer_id)
-            d_ids.update(n.developer_mentions or [])
+    d_ids: set[uuid.UUID] = set()
+    for n in developer_news:
+        pid_d = _primary_developer_id(n, source_dev_map)
+        if pid_d:
+            d_ids.add(pid_d)
+        d_ids.update(n.developer_mentions or [])
+    d_ids.update(source_dev_map.values())
+    if d_ids:
         for d in db.query(Developer).filter(Developer.id.in_(d_ids)).all():
             developer_names_map[str(d.id)] = d.name or str(d.id)
 
@@ -629,14 +708,18 @@ def generate_report(
     for r in raw.get("regions", []):
         region_map[str(r.id)] = r.name
     competitor_groups = _group_competitor_news(competitor_news, competitor_names_map)
-    developer_groups = _group_developer_news(developer_news, developer_names_map)
+    developer_groups = _group_developer_news(developer_news, developer_names_map, source_dev_map)
+    for name, empty in _competitors_with_enabled_sources(db).items():
+        competitor_groups.setdefault(name, empty)
+    for name, empty in _developers_with_enabled_sources(db).items():
+        developer_groups.setdefault(name, empty)
     region_groups = _group_region_news(all_news, region_map)
 
     plan_steps: list[dict[str, str]] = []
-    if report_cfg.get("include_news", True) and competitor_news and (ai_cfg.get("prompt_competitors") or "").strip() and runtime.api_key:
+    if report_cfg.get("include_news", True) and competitor_groups and (ai_cfg.get("prompt_competitors") or "").strip() and runtime.api_key:
         for cname in sorted(competitor_groups.keys()):
             plan_steps.append({"step_id": f"competitor:{cname}", "title": f"Конкурент: {cname}"})
-    if report_cfg.get("include_news", True) and developer_news:
+    if report_cfg.get("include_news", True) and developer_groups:
         prompt_dev_chk = (ai_cfg.get("prompt_developers") or "").strip() or (ai_cfg.get("prompt_competitors") or "").strip()
         if prompt_dev_chk and runtime.api_key:
             for dname in sorted(developer_groups.keys()):
@@ -663,7 +746,7 @@ def generate_report(
         },
     )
 
-    if report_cfg.get("include_news", True) and competitor_news:
+    if report_cfg.get("include_news", True) and competitor_groups:
         prompt_comp = (ai_cfg.get("prompt_competitors") or "").strip()
         for cname, items in sorted(competitor_groups.items()):
             entity_data = _serialize_news_for_ai(
@@ -684,7 +767,7 @@ def generate_report(
             else:
                 result["processed_competitors_by_name"][cname] = _simple_news_summary_linked(items, title=f"Конкурент {cname}")
 
-    if report_cfg.get("include_news", True) and developer_news:
+    if report_cfg.get("include_news", True) and developer_groups:
         prompt_dev = (ai_cfg.get("prompt_developers") or "").strip() or (ai_cfg.get("prompt_competitors") or "").strip()
         for dname, items in sorted(developer_groups.items()):
             entity_data = _serialize_news_for_ai(items, section_subject=dname)

@@ -3,6 +3,7 @@ from __future__ import annotations
 import uuid
 
 from fastapi import APIRouter, Depends, HTTPException, Query
+from pydantic import BaseModel
 from sqlalchemy import func, or_
 from sqlalchemy.orm import Session, joinedload
 
@@ -11,8 +12,18 @@ from app.db import get_db
 from app.models.auth import Role, User
 from app.models.domain import Competitor, Developer, NewsItem
 from app.schemas.news import NewsItemListOut, NewsItemOut
+from app.services.news_entity_sync import sync_news_entity_links_from_sources
 
 router = APIRouter(prefix="/news", tags=["news"])
+
+
+class NewsSyncEntityLinksOut(BaseModel):
+    checked: int
+    updated_developer: int
+    updated_competitor: int
+    sources_touched: int
+    overwrite: bool
+    source_id: str | None = None
 
 
 def _competitor_names_by_ids(db: Session, ids: list[uuid.UUID]) -> dict[uuid.UUID, str]:
@@ -95,6 +106,21 @@ def list_news(
         d.developer_mentions_names = [dev_names_map[did] for did in (n.developer_mentions or []) if dev_names_map.get(did)]
         out_items.append(d)
     return NewsItemListOut(items=out_items, total=total)
+
+
+@router.post("/sync-entity-links", response_model=NewsSyncEntityLinksOut)
+def sync_entity_links_all(
+    source_id: uuid.UUID | None = Query(default=None, description="Только этот источник; без id — все"),
+    overwrite: bool = Query(default=False, description="Перезаписать существующие привязки на новостях"),
+    db: Session = Depends(get_db),
+    user: User = Depends(require_role(Role.ADMIN)),
+) -> NewsSyncEntityLinksOut:
+    """
+    Проставить competitor_id / developer_id на новостях из карточки источника.
+    Нужно после поздней привязки канала к застройщику или конкуренту.
+    """
+    result = sync_news_entity_links_from_sources(db, source_id=source_id, overwrite=overwrite)
+    return NewsSyncEntityLinksOut(**result)
 
 
 @router.delete("/{news_id}", status_code=204)
