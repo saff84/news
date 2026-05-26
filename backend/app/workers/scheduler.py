@@ -12,6 +12,7 @@ from app.db import SessionLocal
 from app.models.domain import Source
 from app.workers.jobs import fetch_source, rebuild_news_clusters_job, run_indicator_job
 from app.workers.queue import get_queue, get_redis
+from app.services.report_storage import prune_published_reports
 
 log = logging.getLogger("workers.scheduler")
 
@@ -106,6 +107,31 @@ def enqueue_due_indicators() -> int:
     return enqueued
 
 
+def enqueue_prune_published_reports() -> int:
+    """Раз в сутки удаляет старые HTML-отчёты из storage/reports."""
+    interval_s = int(os.getenv("REPORTS_PRUNE_INTERVAL_S", str(24 * 3600)))
+    if interval_s <= 0:
+        return 0
+    redis = get_redis()
+    now = int(time.time())
+    throttle_key = "reports:prune:last_run_ts"
+    try:
+        last = int(redis.get(throttle_key) or 0)
+    except Exception:
+        last = 0
+    if now - last < interval_s:
+        return 0
+    try:
+        n = prune_published_reports()
+        redis.set(throttle_key, str(now), ex=14 * 24 * 3600)
+        if n:
+            log.info("scheduled reports prune", extra={"removed": n})
+        return n
+    except Exception:
+        log.exception("reports prune failed")
+        return 0
+
+
 def enqueue_rebuild_news_clusters() -> int:
     """Периодически ставит в очередь пересборку кластеров новостей. NEWS_CLUSTER_REBUILD_INTERVAL_S=0 отключает."""
     interval_s = int(os.getenv("NEWS_CLUSTER_REBUILD_INTERVAL_S", str(6 * 3600)))
@@ -152,6 +178,9 @@ def main() -> None:
             k = enqueue_rebuild_news_clusters()
             if k:
                 log.info("enqueued news cluster rebuild", extra={"count": k})
+            p = enqueue_prune_published_reports()
+            if p:
+                log.info("pruned published reports", extra={"removed": p})
         except Exception:
             log.exception("scheduler loop failed")
         time.sleep(sleep_s)

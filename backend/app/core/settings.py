@@ -39,6 +39,10 @@ class Settings(BaseSettings):
 
     enable_llm: bool = False
 
+    # Опубликованные HTML-отчёты в STORAGE_DIR/reports (очистка старых)
+    reports_keep_days: int = 90
+    reports_keep_count: int = 50
+
     @field_validator("telegram_api_id", "telegram_session_string", "max_bot_token", "vk_access_token", mode="before")
     @classmethod
     def _coerce_empty_to_none(cls, v: object) -> object:

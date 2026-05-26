@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import time
 from typing import Any
 
 import httpx
@@ -139,6 +140,9 @@ def call_provider(
     prompt: str,
     data: str,
     timeout: float = 60.0,
+    max_retries: int = 0,
+    retry_base_seconds: float = 5.0,
+    log_label: str = "ai",
 ) -> str:
     """
     Call configured AI provider using OpenAI-compatible Chat Completions format.
@@ -164,27 +168,64 @@ def call_provider(
         "temperature": 0.3,
     }
 
-    with httpx.Client(timeout=timeout) as client:
-        resp = client.post(
-            url,
-            headers={
-                "Authorization": f"Bearer {api_key.strip()}",
-                "Content-Type": "application/json",
-            },
-            json=payload,
-        )
+    attempts = max(0, int(max_retries)) + 1
+    last_error: AIValidationError | None = None
 
-    if resp.status_code != 200:
+    for attempt in range(attempts):
+        t0 = time.perf_counter()
+        log.info(
+            "AI request start label=%s provider=%s model=%s attempt=%s/%s",
+            log_label,
+            provider_norm,
+            model.strip(),
+            attempt + 1,
+            attempts,
+        )
+        with httpx.Client(timeout=timeout) as client:
+            resp = client.post(
+                url,
+                headers={
+                    "Authorization": f"Bearer {api_key.strip()}",
+                    "Content-Type": "application/json",
+                },
+                json=payload,
+            )
+
+        elapsed_ms = int((time.perf_counter() - t0) * 1000)
+
+        if resp.status_code == 200:
+            try:
+                body = resp.json()
+            except Exception as e:
+                log.error("AI response parse failed label=%s ms=%s err=%s", log_label, elapsed_ms, e)
+                raise AIValidationError(f"Не удалось разобрать ответ ИИ: {e}") from e
+            text = validate_response(body)
+            log.info("AI request ok label=%s ms=%s chars=%s", log_label, elapsed_ms, len(text))
+            return text
+
         try:
             err_body = resp.json()
             err_msg = err_body.get("error", {}).get("message", str(err_body))
         except Exception:
-            err_msg = resp.text or resp.reason_phrase
-        raise AIValidationError(f"Ошибка ИИ ({resp.status_code}): {err_msg}")
+            err_msg = resp.text or resp.reason_phrase or "unknown error"
 
-    try:
-        body = resp.json()
-    except Exception as e:
-        raise AIValidationError(f"Не удалось разобрать ответ ИИ: {e}")
+        last_error = AIValidationError(f"Ошибка ИИ ({resp.status_code}): {err_msg}")
+        log.warning(
+            "AI request failed label=%s status=%s ms=%s attempt=%s/%s msg=%s",
+            log_label,
+            resp.status_code,
+            elapsed_ms,
+            attempt + 1,
+            attempts,
+            err_msg,
+        )
 
-    return validate_response(body)
+        if resp.status_code == 429 and attempt < attempts - 1:
+            wait_s = retry_base_seconds * (2**attempt)
+            log.info("AI rate limit 429, retry in %.1fs label=%s", wait_s, log_label)
+            time.sleep(wait_s)
+            continue
+        break
+
+    assert last_error is not None
+    raise last_error

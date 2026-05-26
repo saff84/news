@@ -22,6 +22,11 @@ from app.models.domain import (
 from app.schemas.report_sections import REPORT_SECTION_JSON_INSTRUCTION
 from app.services.ai_client import AIValidationError, call_provider
 from app.services.ai_config import get_ai_config
+from app.services.ai_runtime import (
+    AIProcessingStats,
+    pause_before_ai_call,
+    runtime_from_config,
+)
 from app.services.report_config import get_report_config
 from app.services.report_section_render import parse_report_section_json, section_dict_to_markdown
 
@@ -356,9 +361,21 @@ def process_section_with_ai(
     model: str,
     prompt: str,
     data: str,
+    max_retries: int = 0,
+    retry_base_seconds: float = 5.0,
+    log_label: str = "report-section",
 ) -> str:
     """Process section with AI. Returns processed text or raises AIValidationError."""
-    return call_provider(provider=provider, api_key=api_key, model=model, prompt=prompt, data=data)
+    return call_provider(
+        provider=provider,
+        api_key=api_key,
+        model=model,
+        prompt=prompt,
+        data=data,
+        max_retries=max_retries,
+        retry_base_seconds=retry_base_seconds,
+        log_label=log_label,
+    )
 
 
 def _process_ai_report_section(
@@ -369,6 +386,9 @@ def _process_ai_report_section(
     prompt: str,
     data: str,
     link_hint: bool = True,
+    max_retries: int = 0,
+    retry_base_seconds: float = 5.0,
+    log_label: str = "report-section",
 ) -> tuple[str, dict[str, Any] | None]:
     """
     ИИ с инструкцией вернуть JSON-секцию; при успешном разборе — markdown + dict для HTML/PDF.
@@ -383,6 +403,9 @@ def _process_ai_report_section(
         model=model,
         prompt=prompt,
         data=data + tail,
+        max_retries=max_retries,
+        retry_base_seconds=retry_base_seconds,
+        log_label=log_label,
     )
     try:
         d = parse_report_section_json(raw)
@@ -444,10 +467,8 @@ def generate_report(
             date_from = date_to - timedelta(days=date_range_days)
 
     ai_cfg = get_ai_config(db)
-
-    provider = (ai_cfg.get("provider") or "openrouter").strip()
-    api_key = (ai_cfg.get("api_key") or "").strip()
-    model = (ai_cfg.get("model") or "openai/gpt-4o-mini").strip()
+    runtime = runtime_from_config(ai_cfg)
+    ai_stats = AIProcessingStats()
 
     raw = fetch_report_data(
         db,
@@ -483,7 +504,38 @@ def generate_report(
         "processed_developers_by_name_json": {},
         "processed_regions_by_name_json": {},
         "processed_raw": raw,
+        "ai_stats": {},
     }
+
+    def _run_ai(
+        *,
+        label: str,
+        prompt: str,
+        data: str,
+        link_hint: bool = True,
+    ) -> tuple[str, dict[str, Any] | None]:
+        if not runtime.api_key or not prompt.strip():
+            return "", None
+        pause_before_ai_call(runtime.request_delay_seconds, label=label)
+        ai_stats.calls += 1
+        try:
+            text, payload = _process_ai_report_section(
+                provider=runtime.provider,
+                api_key=runtime.api_key,
+                model=runtime.model,
+                prompt=prompt,
+                data=data,
+                link_hint=link_hint,
+                max_retries=runtime.max_retries,
+                retry_base_seconds=runtime.retry_base_seconds,
+                log_label=label,
+            )
+            ai_stats.succeeded += 1
+            return text, payload
+        except AIValidationError as e:
+            ai_stats.failed += 1
+            ai_stats.labels_failed.append(label)
+            return f"[Ошибка ИИ: {e}]", None
 
     all_news = raw["news"]
     competitor_news = [n for n in all_news if n.competitor_id or (n.competitor_mentions and len(n.competitor_mentions) > 0)]
@@ -530,20 +582,15 @@ def generate_report(
         prompt_comp = (ai_cfg.get("prompt_competitors") or "").strip()
         for cname, items in sorted(competitor_groups.items()):
             entity_data = _serialize_news_for_ai(items, competitor_names=competitor_names_map)
-            if prompt_comp and api_key:
-                try:
-                    text, payload = _process_ai_report_section(
-                        provider=provider,
-                        api_key=api_key,
-                        model=model,
-                        prompt=prompt_comp,
-                        data=entity_data,
-                    )
-                    result["processed_competitors_by_name"][cname] = text
-                    if payload is not None:
-                        result["processed_competitors_by_name_json"][cname] = payload
-                except AIValidationError as e:
-                    result["processed_competitors_by_name"][cname] = f"[Ошибка ИИ: {e}]"
+            if prompt_comp and runtime.api_key:
+                text, payload = _run_ai(
+                    label=f"competitor:{cname}",
+                    prompt=prompt_comp,
+                    data=entity_data,
+                )
+                result["processed_competitors_by_name"][cname] = text
+                if payload is not None:
+                    result["processed_competitors_by_name_json"][cname] = payload
             else:
                 result["processed_competitors_by_name"][cname] = _simple_news_summary_linked(items, title=f"Конкурент {cname}")
 
@@ -551,61 +598,42 @@ def generate_report(
         prompt_dev = (ai_cfg.get("prompt_developers") or "").strip() or (ai_cfg.get("prompt_competitors") or "").strip()
         for dname, items in sorted(developer_groups.items()):
             entity_data = _serialize_news_for_ai(items)
-            if prompt_dev and api_key:
-                try:
-                    text, payload = _process_ai_report_section(
-                        provider=provider,
-                        api_key=api_key,
-                        model=model,
-                        prompt=prompt_dev,
-                        data=entity_data,
-                    )
-                    result["processed_developers_by_name"][dname] = text
-                    if payload is not None:
-                        result["processed_developers_by_name_json"][dname] = payload
-                except AIValidationError as e:
-                    result["processed_developers_by_name"][dname] = f"[Ошибка ИИ: {e}]"
+            if prompt_dev and runtime.api_key:
+                text, payload = _run_ai(
+                    label=f"developer:{dname}",
+                    prompt=prompt_dev,
+                    data=entity_data,
+                )
+                result["processed_developers_by_name"][dname] = text
+                if payload is not None:
+                    result["processed_developers_by_name_json"][dname] = payload
             else:
                 result["processed_developers_by_name"][dname] = _simple_news_summary_linked(items, title=f"Застройщик {dname}")
 
     if report_cfg.get("include_news", True) and general_news:
         prompt_news = (ai_cfg.get("prompt_news") or "").strip()
         data_str = _serialize_news_for_ai(general_news)
-        if prompt_news and api_key:
-            try:
-                text, payload = _process_ai_report_section(
-                    provider=provider,
-                    api_key=api_key,
-                    model=model,
-                    prompt=prompt_news,
-                    data=data_str,
-                )
-                result["processed_news"] = text
-                if payload is not None:
-                    result["processed_news_json"] = payload
-            except AIValidationError as e:
-                result["processed_news"] = f"[Ошибка ИИ: {e}]"
+        if prompt_news and runtime.api_key:
+            text, payload = _run_ai(label="news:general", prompt=prompt_news, data=data_str)
+            result["processed_news"] = text
+            if payload is not None:
+                result["processed_news_json"] = payload
         else:
             result["processed_news"] = _simple_news_summary_linked(general_news, title="Общие новости")
 
     if report_cfg.get("include_indicators", True):
         prompt_ind = (ai_cfg.get("prompt_indicators") or "").strip()
         data_str = _serialize_indicators(raw["daily_indicators"], raw["parsed_indicators"])
-        if prompt_ind and api_key:
-            try:
-                text, payload = _process_ai_report_section(
-                    provider=provider,
-                    api_key=api_key,
-                    model=model,
-                    prompt=prompt_ind,
-                    data=data_str,
-                    link_hint=False,
-                )
-                result["processed_indicators"] = text
-                if payload is not None:
-                    result["processed_indicators_json"] = payload
-            except AIValidationError as e:
-                result["processed_indicators"] = f"[Ошибка ИИ: {e}]"
+        if prompt_ind and runtime.api_key:
+            text, payload = _run_ai(
+                label="indicators",
+                prompt=prompt_ind,
+                data=data_str,
+                link_hint=False,
+            )
+            result["processed_indicators"] = text
+            if payload is not None:
+                result["processed_indicators_json"] = payload
         else:
             result["processed_indicators"] = data_str
 
@@ -615,20 +643,15 @@ def generate_report(
             if not items:
                 continue
             entity_data = _serialize_news_for_ai(items)
-            if prompt_reg and api_key:
-                try:
-                    text, payload = _process_ai_report_section(
-                        provider=provider,
-                        api_key=api_key,
-                        model=model,
-                        prompt=prompt_reg,
-                        data=entity_data,
-                    )
-                    result["processed_regions_by_name"][rname] = text
-                    if payload is not None:
-                        result["processed_regions_by_name_json"][rname] = payload
-                except AIValidationError as e:
-                    result["processed_regions_by_name"][rname] = f"[Ошибка ИИ: {e}]"
+            if prompt_reg and runtime.api_key:
+                text, payload = _run_ai(
+                    label=f"region:{rname}",
+                    prompt=prompt_reg,
+                    data=entity_data,
+                )
+                result["processed_regions_by_name"][rname] = text
+                if payload is not None:
+                    result["processed_regions_by_name_json"][rname] = payload
             else:
                 result["processed_regions_by_name"][rname] = _simple_news_summary_linked(items, title=f"Регион {rname}")
 
@@ -639,22 +662,19 @@ def generate_report(
         if clusters_list:
             prompt_cl = (ai_cfg.get("prompt_clusters") or "").strip()
             data_str = _serialize_clusters(db, clusters_list)
-            if prompt_cl and api_key:
-                try:
-                    text, payload = _process_ai_report_section(
-                        provider=provider,
-                        api_key=api_key,
-                        model=model,
-                        prompt=prompt_cl,
-                        data=data_str,
-                    )
-                    result["processed_clusters"] = text
-                    if payload is not None:
-                        result["processed_clusters_json"] = payload
-                except AIValidationError as e:
-                    result["processed_clusters"] = f"[Ошибка ИИ: {e}]"
+            if prompt_cl and runtime.api_key:
+                text, payload = _run_ai(label="clusters", prompt=prompt_cl, data=data_str)
+                result["processed_clusters"] = text
+                if payload is not None:
+                    result["processed_clusters_json"] = payload
             else:
                 result["processed_clusters"] = data_str
+
+    result["ai_stats"] = {
+        **ai_stats.to_dict(),
+        "request_delay_seconds": runtime.request_delay_seconds,
+        "max_retries": runtime.max_retries,
+    }
 
     # Remove raw from payload for response (optional)
     if "processed_raw" in result:

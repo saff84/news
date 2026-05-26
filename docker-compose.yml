@@ -1,5 +1,14 @@
+# Ротация логов контейнеров (json-file): не даёт /var/lib/docker разрастись без ограничений.
+# По умолчанию ~100 МБ на сервис (5 файлов × 20 МБ). Настройка: DOCKER_LOG_MAX_SIZE, DOCKER_LOG_MAX_FILE в .env
+x-logging: &default-logging
+  driver: json-file
+  options:
+    max-size: "${DOCKER_LOG_MAX_SIZE:-20m}"
+    max-file: "${DOCKER_LOG_MAX_FILE:-5}"
+
 services:
   db:
+    logging: *default-logging
     restart: unless-stopped
     image: postgres:16
     environment:
@@ -17,6 +26,7 @@ services:
       retries: 20
 
   redis:
+    logging: *default-logging
     restart: unless-stopped
     image: redis:7
     ports:
@@ -28,6 +38,7 @@ services:
       retries: 30
 
   migrate:
+    logging: *default-logging
     build:
       context: ./backend
     env_file:
@@ -61,6 +72,7 @@ services:
     restart: "no"
 
   backend:
+    logging: *default-logging
     restart: unless-stopped
     build:
       context: ./backend
@@ -104,6 +116,7 @@ services:
         condition: service_completed_successfully
 
   worker:
+    logging: *default-logging
     restart: unless-stopped
     build:
       context: ./backend
@@ -139,6 +152,7 @@ services:
         condition: service_completed_successfully
 
   tg-auth:
+    logging: *default-logging
     profiles:
       - manual
     build:
@@ -170,6 +184,7 @@ services:
         condition: service_healthy
 
   scheduler:
+    logging: *default-logging
     restart: unless-stopped
     build:
       context: ./backend
@@ -193,6 +208,7 @@ services:
         condition: service_completed_successfully
 
   frontend:
+    logging: *default-logging
     restart: unless-stopped
     build:
       context: ./frontend

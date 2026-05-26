@@ -608,6 +608,9 @@ export const api = {
         provider: string;
         api_key_set: boolean;
         model: string;
+        ai_request_delay_seconds: number;
+        ai_max_retries: number;
+        ai_retry_base_seconds: number;
         prompt_news: string;
         prompt_competitors: string;
         prompt_developers: string;
@@ -621,6 +624,9 @@ export const api = {
         provider: string;
         api_key: string;
         model: string;
+        ai_request_delay_seconds: number;
+        ai_max_retries: number;
+        ai_retry_base_seconds: number;
         prompt_news: string;
         prompt_competitors: string;
         prompt_developers: string;
@@ -633,6 +639,9 @@ export const api = {
         provider: string;
         api_key_set: boolean;
         model: string;
+        ai_request_delay_seconds: number;
+        ai_max_retries: number;
+        ai_retry_base_seconds: number;
         prompt_news: string;
         prompt_competitors: string;
         prompt_developers: string;
@@ -640,6 +649,15 @@ export const api = {
         prompt_regions: string;
         prompt_clusters: string;
       }>("/api/ai-config", { method: "PUT", body: JSON.stringify(payload) }, accessToken),
+    test: (accessToken: string) =>
+      request<{
+        ok: boolean;
+        provider: string;
+        model: string;
+        latency_ms: number;
+        message: string;
+        response_preview: string | null;
+      }>("/api/ai-config/test", { method: "POST" }, accessToken),
   },
   reports: {
     generate: (
@@ -649,6 +667,14 @@ export const api = {
       request<{
         report_config: { title: string; subtitle: string; company_name: string; company_address: string; footer_text: string };
         period: { date_from: string; date_to: string };
+        ai_stats: {
+          calls: number;
+          succeeded: number;
+          failed: number;
+          labels_failed: string[];
+          request_delay_seconds: number;
+          max_retries: number;
+        };
         processed_news: string | null;
         processed_competitors: string | null;
         processed_indicators: string | null;
@@ -722,6 +748,33 @@ export const api = {
       }
       return res.blob();
     },
+    publishHtml: (
+      accessToken: string,
+      params?: { date_from?: string; date_to?: string; date_range_days?: number; report_month?: string },
+    ) =>
+      request<{
+        id: string;
+        filename: string;
+        public_path: string;
+        title: string;
+        date_from: string;
+        date_to: string;
+        report_month: string | null;
+        created_at: string;
+      }>("/api/reports/publish-html", { method: "POST", body: JSON.stringify(params || {}) }, accessToken),
+    listPublished: (accessToken: string, limit = 20) =>
+      request<{
+        items: Array<{
+          id: string;
+          filename: string;
+          public_path: string;
+          title: string;
+          date_from: string;
+          date_to: string;
+          report_month: string | null;
+          created_at: string;
+        }>;
+      }>(`/api/reports/published?limit=${limit}`, { method: "GET" }, accessToken),
   },
 };
 

@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { Bot, Key, Save } from "lucide-react";
+import { Bot, Key, Play, Save } from "lucide-react";
 import { api } from "../lib/api";
 import { useAuth } from "../state/auth";
 import { useToast } from "../state/toast";
@@ -9,6 +9,9 @@ type AIConfig = {
   provider: string;
   api_key_set: boolean;
   model: string;
+  ai_request_delay_seconds: number;
+  ai_max_retries: number;
+  ai_retry_base_seconds: number;
   prompt_news: string;
   prompt_competitors: string;
   prompt_developers: string;
@@ -82,6 +85,9 @@ export function AIConfigPage() {
     api_key_set: false,
     api_key: "",
     model: "openai/gpt-4o-mini",
+    ai_request_delay_seconds: 2,
+    ai_max_retries: 3,
+    ai_retry_base_seconds: 5,
     prompt_news: "",
     prompt_competitors: "",
     prompt_developers: "",
@@ -92,6 +98,13 @@ export function AIConfigPage() {
   const [modelCustom, setModelCustom] = useState(false);
   const [saveBusy, setSaveBusy] = useState(false);
   const [saveSuccess, setSaveSuccess] = useState(false);
+  const [testBusy, setTestBusy] = useState(false);
+  const [testResult, setTestResult] = useState<{
+    ok: boolean;
+    message: string;
+    latency_ms: number;
+    response_preview: string | null;
+  } | null>(null);
   const provider = (form.provider || "openrouter").toLowerCase();
   const providerModels = provider === "routerai" ? ROUTERAI_MODELS : OPENROUTER_MODELS;
 
@@ -111,6 +124,9 @@ export function AIConfigPage() {
         api_key_set: c.api_key_set,
         api_key: "", // never prefill for security
         model: c.model,
+        ai_request_delay_seconds: c.ai_request_delay_seconds ?? 2,
+        ai_max_retries: c.ai_max_retries ?? 3,
+        ai_retry_base_seconds: c.ai_retry_base_seconds ?? 5,
         prompt_news: c.prompt_news ?? "",
         prompt_competitors: c.prompt_competitors ?? "",
         prompt_developers: c.prompt_developers ?? "",
@@ -138,6 +154,9 @@ export function AIConfigPage() {
       const payload: Parameters<typeof api.aiConfig.update>[1] = {
         provider: form.provider,
         model: form.model,
+        ai_request_delay_seconds: form.ai_request_delay_seconds,
+        ai_max_retries: form.ai_max_retries,
+        ai_retry_base_seconds: form.ai_retry_base_seconds,
         prompt_news: form.prompt_news,
         prompt_competitors: form.prompt_competitors,
         prompt_developers: form.prompt_developers,
@@ -303,6 +322,107 @@ export function AIConfigPage() {
             ) : null}
           </div>
         </label>
+
+        <div className="mt-4 grid gap-3 sm:grid-cols-3">
+          <label className="block">
+            <span className="text-sm text-slate-700">Пауза между запросами (сек)</span>
+            <input
+              type="number"
+              min={0}
+              max={120}
+              step={0.5}
+              className="mt-1 w-full rounded border px-3 py-2 text-sm"
+              value={form.ai_request_delay_seconds}
+              onChange={(e) => setForm((f) => ({ ...f, ai_request_delay_seconds: parseFloat(e.target.value) || 0 }))}
+              disabled={!isAdmin}
+            />
+            <p className="mt-1 text-xs text-slate-500">Снижает 429 при генерации отчёта (конкуренты, регионы…)</p>
+          </label>
+          <label className="block">
+            <span className="text-sm text-slate-700">Повторы при 429</span>
+            <input
+              type="number"
+              min={0}
+              max={10}
+              className="mt-1 w-full rounded border px-3 py-2 text-sm"
+              value={form.ai_max_retries}
+              onChange={(e) => setForm((f) => ({ ...f, ai_max_retries: parseInt(e.target.value, 10) || 0 }))}
+              disabled={!isAdmin}
+            />
+          </label>
+          <label className="block">
+            <span className="text-sm text-slate-700">База ожидания retry (сек)</span>
+            <input
+              type="number"
+              min={1}
+              max={300}
+              step={1}
+              className="mt-1 w-full rounded border px-3 py-2 text-sm"
+              value={form.ai_retry_base_seconds}
+              onChange={(e) => setForm((f) => ({ ...f, ai_retry_base_seconds: parseFloat(e.target.value) || 5 }))}
+              disabled={!isAdmin}
+            />
+          </label>
+        </div>
+
+        <div className="mt-4 flex flex-wrap items-center gap-2">
+          <button
+            type="button"
+            className="inline-flex items-center gap-2 rounded border border-slate-300 bg-white px-3 py-2 text-sm hover:bg-slate-50 disabled:opacity-50"
+            disabled={!isAdmin || testBusy}
+            onClick={async () => {
+              if (!accessToken) return;
+              setTestBusy(true);
+              setTestResult(null);
+              try {
+                if (isAdmin) {
+                  await api.aiConfig.update(accessToken, {
+                    provider: form.provider,
+                    model: form.model,
+                    ai_request_delay_seconds: form.ai_request_delay_seconds,
+                    ai_max_retries: form.ai_max_retries,
+                    ai_retry_base_seconds: form.ai_retry_base_seconds,
+                    ...(form.api_key !== "" || form.api_key_set ? { api_key: form.api_key } : {}),
+                  });
+                }
+                const r = await api.aiConfig.test(accessToken);
+                setTestResult({
+                  ok: r.ok,
+                  message: r.message,
+                  latency_ms: r.latency_ms,
+                  response_preview: r.response_preview,
+                });
+                push({
+                  variant: r.ok ? "success" : "error",
+                  title: r.ok ? "ИИ доступен" : "Ошибка ИИ",
+                  description: r.message,
+                });
+              } catch (e: unknown) {
+                const msg = e instanceof Error ? e.message : "Тест не удался";
+                setTestResult({ ok: false, message: msg, latency_ms: 0, response_preview: null });
+                push({ variant: "error", title: "Тест ИИ", description: msg });
+              } finally {
+                setTestBusy(false);
+              }
+            }}
+          >
+            <Play className="h-4 w-4" />
+            {testBusy ? "Проверка…" : "Тест подключения"}
+          </button>
+          <span className="text-xs text-slate-500">Логи: docker compose logs backend -f | findstr AI</span>
+        </div>
+        {testResult ? (
+          <div
+            className={`mt-3 rounded border p-3 text-sm ${testResult.ok ? "border-emerald-200 bg-emerald-50 text-emerald-900" : "border-red-200 bg-red-50 text-red-800"}`}
+          >
+            <div className="font-medium">{testResult.ok ? "OK" : "Ошибка"}</div>
+            <div className="mt-1">{testResult.message}</div>
+            {testResult.latency_ms > 0 ? <div className="mt-1 text-xs opacity-80">Задержка: {testResult.latency_ms} мс</div> : null}
+            {testResult.response_preview ? (
+              <pre className="mt-2 max-h-24 overflow-auto rounded bg-white/60 p-2 text-xs">{testResult.response_preview}</pre>
+            ) : null}
+          </div>
+        ) : null}
       </div>
 
       <div className="mt-4 space-y-6">

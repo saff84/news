@@ -42,10 +42,29 @@ export function ReportConfigPage() {
   const [saveSuccess, setSaveSuccess] = useState(false);
   const [pdfBusy, setPdfBusy] = useState(false);
   const [htmlBusy, setHtmlBusy] = useState(false);
+  const [publishBusy, setPublishBusy] = useState(false);
   const [generateBusy, setGenerateBusy] = useState(false);
+  const [publishedItems, setPublishedItems] = useState<
+    Array<{
+      id: string;
+      public_path: string;
+      title: string;
+      date_from: string;
+      date_to: string;
+      created_at: string;
+    }>
+  >([]);
   const [generated, setGenerated] = useState<{
     report_config: { title: string; subtitle: string; company_name: string; company_address: string; footer_text: string };
     period: { date_from: string; date_to: string };
+    ai_stats?: {
+      calls: number;
+      succeeded: number;
+      failed: number;
+      labels_failed: string[];
+      request_delay_seconds: number;
+      max_retries: number;
+    };
     processed_news: string | null;
     processed_competitors: string | null;
     processed_indicators: string | null;
@@ -88,8 +107,19 @@ export function ReportConfigPage() {
     }
   };
 
+  const reloadPublished = async () => {
+    if (!accessToken) return;
+    try {
+      const r = await api.reports.listPublished(accessToken, 15);
+      setPublishedItems(r.items);
+    } catch {
+      setPublishedItems([]);
+    }
+  };
+
   useEffect(() => {
     reload();
+    reloadPublished();
   }, [accessToken]);
 
   const handleSave = async () => {
@@ -305,6 +335,35 @@ export function ReportConfigPage() {
             {htmlBusy ? <Loader2 className="h-4 w-4 animate-spin" /> : <FileText className="h-4 w-4" />}
             Скачать HTML (современный)
           </button>
+          <button
+            className="inline-flex items-center gap-2 rounded bg-violet-600 px-3 py-2 text-sm text-white hover:bg-violet-700 disabled:opacity-50"
+            onClick={async () => {
+              if (!accessToken) return;
+              setPublishBusy(true);
+              try {
+                const meta = await api.reports.publishHtml(accessToken, {
+                  date_range_days: form.date_range_days,
+                  report_month: form.report_month || undefined,
+                });
+                const url = `${window.location.origin}${meta.public_path}`;
+                await reloadPublished();
+                push({
+                  variant: "success",
+                  title: "HTML опубликован",
+                  description: url,
+                });
+                window.open(url, "_blank", "noopener,noreferrer");
+              } catch (e: unknown) {
+                push({ variant: "error", title: "Ошибка", description: e instanceof Error ? e.message : "Не удалось опубликовать" });
+              } finally {
+                setPublishBusy(false);
+              }
+            }}
+            disabled={publishBusy || htmlBusy || pdfBusy || generateBusy}
+          >
+            {publishBusy ? <Loader2 className="h-4 w-4 animate-spin" /> : <FileText className="h-4 w-4" />}
+            Опубликовать HTML (ссылка)
+          </button>
           <span className="text-slate-400">|</span>
           <button
             className="inline-flex items-center gap-2 rounded border border-slate-300 bg-white px-3 py-2 text-sm text-slate-700 hover:bg-slate-50 disabled:opacity-50"
@@ -338,6 +397,29 @@ export function ReportConfigPage() {
           </div>
         ) : null}
       </div>
+
+      {publishedItems.length > 0 ? (
+        <div className="mt-4 rounded border bg-white p-4">
+          <h2 className="text-sm font-semibold text-slate-800">Опубликованные HTML-отчёты</h2>
+          <p className="mt-1 text-xs text-slate-500">Доступны по адресу от корня сайта: /reports/…</p>
+          <ul className="mt-2 space-y-2 text-sm">
+            {publishedItems.map((item) => {
+              const href = `${window.location.origin}${item.public_path}`;
+              return (
+                <li key={item.id} className="flex flex-wrap items-center gap-2 border-t border-slate-100 pt-2 first:border-0 first:pt-0">
+                  <span className="font-medium">{item.title}</span>
+                  <span className="text-slate-500">
+                    {item.date_from} — {item.date_to}
+                  </span>
+                  <a href={href} target="_blank" rel="noopener noreferrer" className="text-sky-700 underline">
+                    {item.public_path}
+                  </a>
+                </li>
+              );
+            })}
+          </ul>
+        </div>
+      ) : null}
 
       {generated ? (
         <div className="mt-6 rounded border bg-white p-4">
@@ -384,6 +466,19 @@ export function ReportConfigPage() {
               Скачать PDF с графиками
             </button>
           </div>
+          {generated.ai_stats ? (
+            <div
+              className={`mt-3 rounded border p-2 text-xs ${
+                (generated.ai_stats.failed ?? 0) > 0 ? "border-amber-200 bg-amber-50 text-amber-900" : "border-slate-200 bg-slate-50 text-slate-700"
+              }`}
+            >
+              ИИ: запросов {generated.ai_stats.calls}, успешно {generated.ai_stats.succeeded}, ошибок {generated.ai_stats.failed}.
+              Пауза между запросами: {generated.ai_stats.request_delay_seconds} с.
+              {(generated.ai_stats.labels_failed?.length ?? 0) > 0 ? (
+                <span className="block mt-1">Сбои: {generated.ai_stats.labels_failed.join(", ")}</span>
+              ) : null}
+            </div>
+          ) : null}
           <div className="mt-3 space-y-4">
             {generated.processed_news ? (
               <div>
