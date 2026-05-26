@@ -1,5 +1,6 @@
 services:
   db:
+    restart: unless-stopped
     image: postgres:16
     environment:
       POSTGRES_DB: newsint
@@ -16,6 +17,7 @@ services:
       retries: 20
 
   redis:
+    restart: unless-stopped
     image: redis:7
     ports:
       - "6379:6379"
@@ -59,6 +61,7 @@ services:
     restart: "no"
 
   backend:
+    restart: unless-stopped
     build:
       context: ./backend
     env_file:
@@ -101,6 +104,7 @@ services:
         condition: service_completed_successfully
 
   worker:
+    restart: unless-stopped
     build:
       context: ./backend
     env_file:
@@ -166,6 +170,7 @@ services:
         condition: service_healthy
 
   scheduler:
+    restart: unless-stopped
     build:
       context: ./backend
     env_file:
@@ -188,6 +193,7 @@ services:
         condition: service_completed_successfully
 
   frontend:
+    restart: unless-stopped
     build:
       context: ./frontend
       dockerfile: Dockerfile.nginx
