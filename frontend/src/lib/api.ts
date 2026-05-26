@@ -750,7 +750,25 @@ export const api = {
     },
     publishHtml: (
       accessToken: string,
-      params?: { date_from?: string; date_to?: string; date_range_days?: number; report_month?: string },
+      params?: {
+        date_from?: string;
+        date_to?: string;
+        date_range_days?: number;
+        report_month?: string;
+        skip_ai?: boolean;
+        processed_indicators?: string | null;
+        processed_news?: string | null;
+        processed_clusters?: string | null;
+        processed_news_json?: Record<string, unknown> | null;
+        processed_indicators_json?: Record<string, unknown> | null;
+        processed_clusters_json?: Record<string, unknown> | null;
+        processed_competitors_by_name?: Record<string, string>;
+        processed_developers_by_name?: Record<string, string>;
+        processed_regions_by_name?: Record<string, string>;
+        processed_competitors_by_name_json?: Record<string, Record<string, unknown>>;
+        processed_developers_by_name_json?: Record<string, Record<string, unknown>>;
+        processed_regions_by_name_json?: Record<string, Record<string, unknown>>;
+      },
     ) =>
       request<{
         id: string;

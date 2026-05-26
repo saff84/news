@@ -341,16 +341,36 @@ export function ReportConfigPage() {
               if (!accessToken) return;
               setPublishBusy(true);
               try {
+                const useCachedAi = Boolean(generated);
                 const meta = await api.reports.publishHtml(accessToken, {
                   date_range_days: form.date_range_days,
                   report_month: form.report_month || undefined,
+                  ...(generated
+                    ? {
+                        date_from: generated.period.date_from,
+                        date_to: generated.period.date_to,
+                        skip_ai: true,
+                        processed_indicators: generated.processed_indicators ?? undefined,
+                        processed_news: generated.processed_news ?? undefined,
+                        processed_clusters: generated.processed_clusters ?? undefined,
+                        processed_news_json: generated.processed_news_json ?? undefined,
+                        processed_indicators_json: generated.processed_indicators_json ?? undefined,
+                        processed_clusters_json: generated.processed_clusters_json ?? undefined,
+                        processed_competitors_by_name: generated.processed_competitors_by_name,
+                        processed_developers_by_name: generated.processed_developers_by_name,
+                        processed_regions_by_name: generated.processed_regions_by_name,
+                        processed_competitors_by_name_json: generated.processed_competitors_by_name_json,
+                        processed_developers_by_name_json: generated.processed_developers_by_name_json,
+                        processed_regions_by_name_json: generated.processed_regions_by_name_json,
+                      }
+                    : {}),
                 });
                 const url = `${window.location.origin}${meta.public_path}`;
                 await reloadPublished();
                 push({
                   variant: "success",
                   title: "HTML опубликован",
-                  description: url,
+                  description: useCachedAi ? `${url} (без повторного ИИ)` : url,
                 });
                 window.open(url, "_blank", "noopener,noreferrer");
               } catch (e: unknown) {
@@ -364,6 +384,9 @@ export function ReportConfigPage() {
             {publishBusy ? <Loader2 className="h-4 w-4 animate-spin" /> : <FileText className="h-4 w-4" />}
             Опубликовать HTML (ссылка)
           </button>
+          <p className="w-full text-xs text-slate-500">
+            Сначала «Сгенерировать отчёт (ИИ)», затем публикация — быстрее (ИИ не вызывается повторно). Без генерации публикация займёт несколько минут.
+          </p>
           <span className="text-slate-400">|</span>
           <button
             className="inline-flex items-center gap-2 rounded border border-slate-300 bg-white px-3 py-2 text-sm text-slate-700 hover:bg-slate-50 disabled:opacity-50"

@@ -67,6 +67,11 @@ class ReportGenerateOut(BaseModel):
     processed_regions_by_name_json: dict[str, Any] = Field(default_factory=dict)
 
 
+class ReportPublishHtmlIn(ReportGeneratePdfIn):
+    """Публикация HTML: при skip_ai=true использует уже готовые processed_* (быстро, без повторного ИИ)."""
+    skip_ai: bool = Field(default=False)
+
+
 class ReportPublishedOut(BaseModel):
     id: str
     filename: str
@@ -151,6 +156,39 @@ def _build_html_report_data(
     data["processed_developers_by_name_json"] = generated.get("processed_developers_by_name_json") or {}
     data["processed_regions_by_name_json"] = generated.get("processed_regions_by_name_json") or {}
     return data
+
+
+def _generated_from_processed_payload(
+    p: ReportGeneratePdfIn,
+    *,
+    report_cfg: dict,
+    date_from: date,
+    date_to: date,
+) -> dict[str, Any]:
+    return {
+        "report_config": {
+            "title": report_cfg.get("title", "Аналитический отчёт"),
+            "subtitle": report_cfg.get("subtitle", ""),
+            "company_name": report_cfg.get("company_name", ""),
+            "company_address": report_cfg.get("company_address", ""),
+            "footer_text": report_cfg.get("footer_text", ""),
+        },
+        "period": {"date_from": str(date_from), "date_to": str(date_to)},
+        "processed_indicators": p.processed_indicators,
+        "processed_news": p.processed_news,
+        "processed_competitors": p.processed_competitors,
+        "processed_regions": p.processed_regions,
+        "processed_clusters": p.processed_clusters,
+        "processed_news_json": p.processed_news_json,
+        "processed_indicators_json": p.processed_indicators_json,
+        "processed_clusters_json": p.processed_clusters_json,
+        "processed_competitors_by_name": p.processed_competitors_by_name or {},
+        "processed_developers_by_name": p.processed_developers_by_name or {},
+        "processed_regions_by_name": p.processed_regions_by_name or {},
+        "processed_competitors_by_name_json": p.processed_competitors_by_name_json or {},
+        "processed_developers_by_name_json": p.processed_developers_by_name_json or {},
+        "processed_regions_by_name_json": p.processed_regions_by_name_json or {},
+    }
 
 
 @router.post("/generate", response_model=ReportGenerateOut)
@@ -284,14 +322,15 @@ def generate_html(
 
 @router.post("/publish-html", response_model=ReportPublishedOut)
 def publish_html(
-    payload: ReportGenerateIn | None = Body(default=None),
+    payload: ReportPublishHtmlIn | None = Body(default=None),
     db: Session = Depends(get_db),
     user: User = Depends(require_role(Role.ADMIN, Role.ANALYST)),
 ) -> ReportPublishedOut:
     """
     Сгенерировать HTML-отчёт, сохранить на диск и вернуть публичный путь /reports/{id}.html.
+    skip_ai=true + processed_* — без повторных запросов к ИИ (рекомендуется после «Сгенерировать отчёт»).
     """
-    p = payload or ReportGenerateIn()
+    p = payload or ReportPublishHtmlIn()
     date_from, date_to, period_month_val, report_cfg = _resolve_report_period(
         db,
         date_from=p.date_from,
@@ -299,6 +338,12 @@ def publish_html(
         date_range_days=p.date_range_days,
         report_month=p.report_month,
     )
+    if p.skip_ai:
+        generated = _generated_from_processed_payload(
+            p, report_cfg=report_cfg, date_from=date_from, date_to=date_to
+        )
+    else:
+        generated = None
     data = _build_html_report_data(
         db,
         date_from=date_from,
@@ -306,6 +351,7 @@ def publish_html(
         period_month_val=period_month_val,
         report_cfg=report_cfg,
         report_month=p.report_month,
+        generated=generated,
     )
     html = build_report_html(**data)
     meta = save_published_html(

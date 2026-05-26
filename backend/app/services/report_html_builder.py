@@ -7,6 +7,7 @@ from datetime import datetime, timezone
 from html import escape
 from typing import Any
 
+from app.services.period_sort import period_sort_key
 from app.services.report_markup import markdown_links_to_html
 from app.services.report_section_render import section_dict_to_html_fragment
 
@@ -119,6 +120,13 @@ def build_report_html(
             parsed_by_name[name] = {"x": [], "y": []}
         parsed_by_name[name]["x"].append(str(r.period))
         parsed_by_name[name]["y"].append(float(r.value))
+
+    # Графики: слева старые даты, справа самые свежие
+    for series in parsed_by_name.values():
+        pairs = sorted(zip(series["x"], series["y"]), key=lambda p: period_sort_key(p[0]))
+        if pairs:
+            series["x"] = [p[0] for p in pairs]
+            series["y"] = [p[1] for p in pairs]
 
     dev_cards = _cards_for_summaries_mixed(processed_developers_by_name, processed_developers_by_name_json)
     comp_cards = _cards_for_summaries_mixed(processed_competitors_by_name, processed_competitors_by_name_json)

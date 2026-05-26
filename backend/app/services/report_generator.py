@@ -37,9 +37,21 @@ _AI_LINK_INSTRUCTION = (
 )
 
 
-def _serialize_news_for_ai(items: list, *, competitor_names: dict[str, str] | None = None) -> str:
-    """Вход для ИИ: дата, заголовок+URL в Markdown, фрагмент. competitor_names — подписи [конкурент] в строке."""
+def _serialize_news_for_ai(
+    items: list,
+    *,
+    competitor_names: dict[str, str] | None = None,
+    section_subject: str | None = None,
+) -> str:
+    """Вход для ИИ: дата, заголовок+URL в Markdown, фрагмент."""
     lines: list[str] = []
+    if section_subject:
+        lines.append(
+            f"Заголовок раздела отчёта: «{section_subject}». "
+            f"Саммари должно относиться только к этой компании/сущности. "
+            f"Не описывай других участников рынка, даже если они упомянуты в тексте новости."
+        )
+        lines.append("")
     for n in items:
         pub = n.published_at.strftime("%Y-%m-%d") if n.published_at else "—"
         title = (n.title or "Без заголовка").replace("\n", " ").strip()
@@ -141,15 +153,13 @@ def _group_competitor_news(news: list, competitors_map: dict[str, str]) -> dict[
 
 
 def _group_developer_news(news: list, developers_map: dict[str, str]) -> dict[str, list]:
+    """Только primary developer_id — без дублирования в чужие карточки по mentions."""
     out: dict[str, list] = defaultdict(list)
     for n in news:
-        dids = set()
-        if n.developer_id:
-            dids.add(n.developer_id)
-        dids.update(n.developer_mentions or [])
-        for did in dids:
-            dname = developers_map.get(str(did), str(did))
-            out[dname].append(n)
+        if not n.developer_id:
+            continue
+        dname = developers_map.get(str(n.developer_id), str(n.developer_id))
+        out[dname].append(n)
     return dict(out)
 
 
@@ -296,7 +306,7 @@ def get_report_data_for_pdf(
     news_general: list = []
     for n in news:
         has_c = bool(n.competitor_id or (n.competitor_mentions and len(n.competitor_mentions) > 0))
-        has_d = bool(n.developer_id or (n.developer_mentions and len(n.developer_mentions) > 0))
+        has_d = bool(n.developer_id)
         if has_c:
             cids = set()
             if n.competitor_id:
@@ -305,14 +315,9 @@ def get_report_data_for_pdf(
             for cid in cids:
                 cname = competitors_map.get(str(cid), str(cid))
                 news_by_competitor.setdefault(cname, []).append(n)
-        if has_d:
-            dids = set()
-            if n.developer_id:
-                dids.add(n.developer_id)
-            dids.update(n.developer_mentions or [])
-            for did in dids:
-                dname = developers_map.get(str(did), str(did))
-                news_by_developer.setdefault(dname, []).append(n)
+        if has_d and n.developer_id:
+            dname = developers_map.get(str(n.developer_id), str(n.developer_id))
+            news_by_developer.setdefault(dname, []).append(n)
         if not has_c and not has_d:
             news_general.append(n)
 
@@ -539,7 +544,7 @@ def generate_report(
 
     all_news = raw["news"]
     competitor_news = [n for n in all_news if n.competitor_id or (n.competitor_mentions and len(n.competitor_mentions) > 0)]
-    developer_news = [n for n in all_news if n.developer_id or (n.developer_mentions and len(n.developer_mentions) > 0)]
+    developer_news = [n for n in all_news if n.developer_id]
     general_news = [
         n
         for n in all_news
@@ -581,7 +586,11 @@ def generate_report(
     if report_cfg.get("include_news", True) and competitor_news:
         prompt_comp = (ai_cfg.get("prompt_competitors") or "").strip()
         for cname, items in sorted(competitor_groups.items()):
-            entity_data = _serialize_news_for_ai(items, competitor_names=competitor_names_map)
+            entity_data = _serialize_news_for_ai(
+                items,
+                competitor_names=competitor_names_map,
+                section_subject=cname,
+            )
             if prompt_comp and runtime.api_key:
                 text, payload = _run_ai(
                     label=f"competitor:{cname}",
@@ -597,7 +606,7 @@ def generate_report(
     if report_cfg.get("include_news", True) and developer_news:
         prompt_dev = (ai_cfg.get("prompt_developers") or "").strip() or (ai_cfg.get("prompt_competitors") or "").strip()
         for dname, items in sorted(developer_groups.items()):
-            entity_data = _serialize_news_for_ai(items)
+            entity_data = _serialize_news_for_ai(items, section_subject=dname)
             if prompt_dev and runtime.api_key:
                 text, payload = _run_ai(
                     label=f"developer:{dname}",
@@ -642,7 +651,7 @@ def generate_report(
         for rname, items in sorted(region_groups.items()):
             if not items:
                 continue
-            entity_data = _serialize_news_for_ai(items)
+            entity_data = _serialize_news_for_ai(items, section_subject=rname)
             if prompt_reg and runtime.api_key:
                 text, payload = _run_ai(
                     label=f"region:{rname}",
