@@ -10,7 +10,7 @@ from sqlalchemy.orm import Session
 from app.core.settings import settings
 from app.models.domain import MaxChannelState, NewsItem, Source
 from app.services.max_config import get_max_config
-from app.parsers.keyword_filter import should_keep_item
+from app.services.news_filter_config import should_keep_news_item
 from app.parsers.normalize import canonicalize_url, normalize_text, period_month_from_dt, sha256_hex, simhash64
 from app.tagging.rules import tag_item
 
@@ -173,7 +173,7 @@ def ingest_max_channel(db: Session, *, source: Source) -> dict[str, Any]:
         canonical = canonicalize_url(item_url)
 
         search_text = " ".join([item_url, title or "", clean])
-        if not should_keep_item(search_text, source.settings_json):
+        if not should_keep_news_item(db, search_text, source.settings_json):
             continue
 
         norm_hash = sha256_hex(clean) if clean else None

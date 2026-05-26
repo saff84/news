@@ -11,7 +11,7 @@ from sqlalchemy.orm import Session
 from app.models.domain import NewsItem, RssState, Source
 from app.parsers.limits import acquire_rate_slot, domain_key
 from app.parsers.normalize import canonicalize_url, html_to_text, normalize_text, period_month_from_dt, sha256_hex, simhash64
-from app.parsers.keyword_filter import should_keep_item
+from app.services.news_filter_config import should_keep_news_item
 from app.parsers.robots import can_fetch
 from app.tagging.rules import tag_item
 from app.workers.queue import get_redis
@@ -115,7 +115,7 @@ def ingest_rss(db: Session, *, source: Source) -> dict[str, Any]:
         sh = simhash64(norm) if norm else None
 
         search_text = " ".join([str(url or ""), str(title or ""), str(content_text or ""), str(summary or "")])
-        if not should_keep_item(search_text, source.settings_json):
+        if not should_keep_news_item(db, search_text, source.settings_json):
             continue
 
         tags = tag_item(

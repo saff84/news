@@ -10,7 +10,7 @@ from app.core.deps import get_request_meta, require_role
 from app.db import get_db
 from app.models.auth import Role, User
 from app.models.domain import MaxChannelState, NewsItem, RssState, Source, SourceType, TgChannelState, VkGroupState
-from app.parsers.keyword_filter import should_keep_item
+from app.services.news_filter_config import news_item_search_text, should_keep_news_item
 from app.schemas.sources import SourceCreate, SourceListOut, SourceOut, SourceUpdate
 from app.services.audit import write_audit_log
 
@@ -273,15 +273,13 @@ def cleanup_news_by_filter(
     items = db.query(NewsItem).filter(NewsItem.source_id == source_id).all()
     deleted = 0
     for n in items:
-        search_text = " ".join(
-            [
-                str(n.url or ""),
-                str(n.title or ""),
-                str(n.snippet or ""),
-                str(n.content_text or ""),
-            ]
+        search_text = news_item_search_text(
+            url=n.url,
+            title=n.title,
+            snippet=n.snippet,
+            content_text=n.content_text,
         )
-        if not should_keep_item(search_text, s.settings_json):
+        if not should_keep_news_item(db, search_text, s.settings_json):
             db.delete(n)
             deleted += 1
 

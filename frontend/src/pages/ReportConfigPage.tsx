@@ -103,6 +103,93 @@ function applyAiStreamEvent(steps: AiStep[], event: Record<string, unknown>): Ai
   ];
 }
 
+type ResultTab = "general" | "competitors" | "developers" | "regions";
+type GeneralSubTab = "news" | "clusters" | "indicators";
+type AiFilterTab = "all" | "competitors" | "developers" | "regions" | "other";
+
+function tabBtn(active: boolean) {
+  return `shrink-0 rounded-t border px-3 py-2 text-xs font-medium transition-colors ${
+    active
+      ? "border-slate-300 border-b-white bg-white text-slate-900 shadow-sm"
+      : "border-transparent bg-slate-100 text-slate-600 hover:bg-slate-200"
+  }`;
+}
+
+function pillBtn(active: boolean) {
+  return `shrink-0 rounded-full border px-2.5 py-1 text-xs ${
+    active ? "border-slate-400 bg-slate-800 text-white" : "border-slate-200 bg-white text-slate-700 hover:bg-slate-50"
+  }`;
+}
+
+function ProcessedTextBlock({
+  text,
+  json,
+  title,
+}: {
+  text: string;
+  json?: Record<string, unknown> | null;
+  title?: string;
+}) {
+  return (
+    <div>
+      {title ? <h3 className="text-xs font-medium text-slate-600">{title}</h3> : null}
+      <pre className="mt-1 max-h-[min(60vh,28rem)] overflow-y-auto whitespace-pre-wrap rounded bg-slate-50 p-2 text-xs">
+        {text}
+      </pre>
+      {json ? (
+        <details className="mt-2">
+          <summary className="cursor-pointer text-xs text-sky-700">JSON для верстки</summary>
+          <pre className="mt-1 max-h-56 overflow-y-auto rounded border border-slate-200 bg-white p-2 text-xs">
+            {JSON.stringify(json, null, 2)}
+          </pre>
+        </details>
+      ) : null}
+    </div>
+  );
+}
+
+function EntityPickerPanel({
+  entries,
+  jsonByName,
+  activeName,
+  onPick,
+  emptyLabel,
+}: {
+  entries: Record<string, string>;
+  jsonByName: Record<string, Record<string, unknown>>;
+  activeName: string;
+  onPick: (name: string) => void;
+  emptyLabel: string;
+}) {
+  const names = Object.keys(entries).sort((a, b) => a.localeCompare(b, "ru"));
+  if (!names.length) {
+    return <p className="text-sm text-slate-500">{emptyLabel}</p>;
+  }
+  const current = names.includes(activeName) ? activeName : names[0];
+  const text = entries[current];
+  const json = jsonByName[current];
+
+  return (
+    <div>
+      <div className="-mx-1 flex gap-1 overflow-x-auto pb-2">
+        {names.map((name) => (
+          <button key={name} type="button" className={pillBtn(name === current)} onClick={() => onPick(name)}>
+            {name}
+          </button>
+        ))}
+      </div>
+      <ProcessedTextBlock text={text} json={json} title={current} />
+    </div>
+  );
+}
+
+function aiStepCategory(stepId: string): AiFilterTab {
+  if (stepId.startsWith("competitor:")) return "competitors";
+  if (stepId.startsWith("developer:")) return "developers";
+  if (stepId.startsWith("region:")) return "regions";
+  return "other";
+}
+
 export function ReportConfigPage() {
   const { accessToken, user } = useAuth();
   const { push } = useToast();
@@ -144,6 +231,12 @@ export function ReportConfigPage() {
   const [aiStreamMeta, setAiStreamMeta] = useState<{ provider?: string; model?: string; total?: number } | null>(null);
   const [publishReady, setPublishReady] = useState<{ ready: boolean; message: string } | null>(null);
   const [deleteBusyId, setDeleteBusyId] = useState<string | null>(null);
+  const [resultTab, setResultTab] = useState<ResultTab>("general");
+  const [generalSubTab, setGeneralSubTab] = useState<GeneralSubTab>("news");
+  const [competitorTab, setCompetitorTab] = useState("");
+  const [developerTab, setDeveloperTab] = useState("");
+  const [regionTab, setRegionTab] = useState("");
+  const [aiFilterTab, setAiFilterTab] = useState<AiFilterTab>("all");
   const generateAbortRef = useRef<AbortController | null>(null);
 
   const reload = async () => {
@@ -187,6 +280,28 @@ export function ReportConfigPage() {
     reloadPublished();
     return () => generateAbortRef.current?.abort();
   }, [accessToken]);
+
+  useEffect(() => {
+    if (!generated) return;
+    const comp = Object.keys(generated.processed_competitors_by_name || {}).sort((a, b) => a.localeCompare(b, "ru"));
+    const dev = Object.keys(generated.processed_developers_by_name || {}).sort((a, b) => a.localeCompare(b, "ru"));
+    const reg = Object.keys(generated.processed_regions_by_name || {}).sort((a, b) => a.localeCompare(b, "ru"));
+    setCompetitorTab(comp[0] || "");
+    setDeveloperTab(dev[0] || "");
+    setRegionTab(reg[0] || "");
+    if (generated.processed_news) {
+      setResultTab("general");
+      setGeneralSubTab("news");
+    } else if (generated.processed_clusters) {
+      setResultTab("general");
+      setGeneralSubTab("clusters");
+    } else if (generated.processed_indicators) {
+      setResultTab("general");
+      setGeneralSubTab("indicators");
+    } else if (comp.length) setResultTab("competitors");
+    else if (dev.length) setResultTab("developers");
+    else if (reg.length) setResultTab("regions");
+  }, [generated]);
 
   const handleDeletePublished = async (reportId: string) => {
     if (!accessToken || !isAdmin) return;
@@ -481,6 +596,7 @@ export function ReportConfigPage() {
               setAiSteps([]);
               setAiStreamMeta(null);
               setPublishReady(null);
+              setAiFilterTab("all");
               try {
                 const r = (await api.reports.generateStream(
                   accessToken,
@@ -532,8 +648,35 @@ export function ReportConfigPage() {
                 {aiStreamMeta.total != null ? ` · шагов: ${aiStreamMeta.total}` : null}
               </p>
             ) : null}
-            <ul className="mt-2 space-y-2">
-              {aiSteps.map((step) => (
+            {aiSteps.length > 0 ? (
+              <div className="mt-2 flex flex-wrap gap-1 border-b border-slate-200 pb-2">
+                {(
+                  [
+                    ["all", "Все", aiSteps.length],
+                    ["competitors", "Конкуренты", aiSteps.filter((s) => aiStepCategory(s.stepId) === "competitors").length],
+                    ["developers", "Застройщики", aiSteps.filter((s) => aiStepCategory(s.stepId) === "developers").length],
+                    ["regions", "Регионы", aiSteps.filter((s) => aiStepCategory(s.stepId) === "regions").length],
+                    ["other", "Прочее", aiSteps.filter((s) => aiStepCategory(s.stepId) === "other").length],
+                  ] as const
+                )
+                  .filter(([id, , n]) => id === "all" || n > 0)
+                  .map(([id, label, n]) => (
+                    <button
+                      key={id}
+                      type="button"
+                      className={pillBtn(aiFilterTab === id)}
+                      onClick={() => setAiFilterTab(id)}
+                    >
+                      {label}
+                      {id !== "all" ? ` (${n})` : ""}
+                    </button>
+                  ))}
+              </div>
+            ) : null}
+            <ul className="mt-2 max-h-[min(50vh,24rem)] space-y-2 overflow-y-auto">
+              {aiSteps
+                .filter((step) => aiFilterTab === "all" || aiStepCategory(step.stepId) === aiFilterTab)
+                .map((step) => (
                 <li key={step.stepId} className="rounded border bg-white px-3 py-2 text-sm">
                   <div className="flex flex-wrap items-center gap-2">
                     {step.status === "sending" ? (
@@ -755,107 +898,119 @@ export function ReportConfigPage() {
               ) : null}
             </div>
           ) : null}
-          <div className="mt-3 space-y-4">
-            {generated.processed_news ? (
-              <div>
-                <h3 className="text-xs font-medium text-slate-600">Общие новости (ИИ)</h3>
-                <pre className="mt-1 max-h-48 overflow-y-auto whitespace-pre-wrap rounded bg-slate-50 p-2 text-xs">{generated.processed_news}</pre>
-                {generated.processed_news_json ? (
-                  <details className="mt-2">
-                    <summary className="cursor-pointer text-xs text-sky-700">JSON для верстки / внешних пайплайнов</summary>
-                    <pre className="mt-1 max-h-56 overflow-y-auto rounded border border-slate-200 bg-white p-2 text-xs">{JSON.stringify(generated.processed_news_json, null, 2)}</pre>
-                  </details>
-                ) : null}
-              </div>
-            ) : null}
-            {generated.processed_clusters ? (
-              <div>
-                <h3 className="text-xs font-medium text-slate-600">Кластеры похожих новостей (ИИ)</h3>
-                <pre className="mt-1 max-h-48 overflow-y-auto whitespace-pre-wrap rounded bg-slate-50 p-2 text-xs">{generated.processed_clusters}</pre>
-                {generated.processed_clusters_json ? (
-                  <details className="mt-2">
-                    <summary className="cursor-pointer text-xs text-sky-700">JSON для верстки</summary>
-                    <pre className="mt-1 max-h-56 overflow-y-auto rounded border border-slate-200 bg-white p-2 text-xs">{JSON.stringify(generated.processed_clusters_json, null, 2)}</pre>
-                  </details>
-                ) : null}
-              </div>
-            ) : null}
-            {generated.processed_indicators ? (
-              <div>
-                <h3 className="text-xs font-medium text-slate-600">Индикаторы (ИИ)</h3>
-                <pre className="mt-1 max-h-48 overflow-y-auto whitespace-pre-wrap rounded bg-slate-50 p-2 text-xs">{generated.processed_indicators}</pre>
-                {generated.processed_indicators_json ? (
-                  <details className="mt-2">
-                    <summary className="cursor-pointer text-xs text-sky-700">JSON для верстки</summary>
-                    <pre className="mt-1 max-h-56 overflow-y-auto rounded border border-slate-200 bg-white p-2 text-xs">{JSON.stringify(generated.processed_indicators_json, null, 2)}</pre>
-                  </details>
-                ) : null}
-              </div>
-            ) : null}
-            {Object.keys(generated.processed_developers_by_name || {}).length > 0 ? (
-              <div>
-                <h3 className="text-xs font-medium text-slate-600">Застройщики (ИИ)</h3>
-                <div className="mt-1 space-y-2">
-                  {Object.entries(generated.processed_developers_by_name).map(([name, text]) => (
-                    <div key={name}>
-                      <div className="text-xs font-semibold text-slate-700">{name}</div>
-                      <pre className="max-h-40 overflow-y-auto whitespace-pre-wrap rounded bg-slate-50 p-2 text-xs">{text}</pre>
-                      {(generated.processed_developers_by_name_json ?? {})[name] ? (
-                        <details className="mt-1">
-                          <summary className="cursor-pointer text-xs text-sky-700">JSON</summary>
-                          <pre className="mt-1 max-h-40 overflow-y-auto rounded border bg-white p-2 text-xs">
-                            {JSON.stringify((generated.processed_developers_by_name_json ?? {})[name], null, 2)}
-                          </pre>
-                        </details>
+          {(() => {
+            const g = generated;
+            const compCount = Object.keys(g.processed_competitors_by_name || {}).length;
+            const devCount = Object.keys(g.processed_developers_by_name || {}).length;
+            const regCount = Object.keys(g.processed_regions_by_name || {}).length;
+            const hasGeneral = Boolean(g.processed_news || g.processed_clusters || g.processed_indicators);
+
+            return (
+              <div className="mt-3">
+                <div className="flex flex-wrap gap-0.5 border-b border-slate-200">
+                  {hasGeneral ? (
+                    <button type="button" className={tabBtn(resultTab === "general")} onClick={() => setResultTab("general")}>
+                      Общее
+                    </button>
+                  ) : null}
+                  {compCount > 0 ? (
+                    <button type="button" className={tabBtn(resultTab === "competitors")} onClick={() => setResultTab("competitors")}>
+                      Конкуренты ({compCount})
+                    </button>
+                  ) : null}
+                  {devCount > 0 ? (
+                    <button type="button" className={tabBtn(resultTab === "developers")} onClick={() => setResultTab("developers")}>
+                      Застройщики ({devCount})
+                    </button>
+                  ) : null}
+                  {regCount > 0 ? (
+                    <button type="button" className={tabBtn(resultTab === "regions")} onClick={() => setResultTab("regions")}>
+                      Регионы ({regCount})
+                    </button>
+                  ) : null}
+                </div>
+                <div className="rounded-b border border-t-0 border-slate-200 bg-white p-3">
+                  {resultTab === "general" && hasGeneral ? (
+                    <div>
+                      <div className="mb-3 flex flex-wrap gap-1">
+                        {g.processed_news ? (
+                          <button type="button" className={pillBtn(generalSubTab === "news")} onClick={() => setGeneralSubTab("news")}>
+                            Новости
+                          </button>
+                        ) : null}
+                        {g.processed_clusters ? (
+                          <button
+                            type="button"
+                            className={pillBtn(generalSubTab === "clusters")}
+                            onClick={() => setGeneralSubTab("clusters")}
+                          >
+                            Кластеры
+                          </button>
+                        ) : null}
+                        {g.processed_indicators ? (
+                          <button
+                            type="button"
+                            className={pillBtn(generalSubTab === "indicators")}
+                            onClick={() => setGeneralSubTab("indicators")}
+                          >
+                            Индикаторы
+                          </button>
+                        ) : null}
+                      </div>
+                      {generalSubTab === "news" && g.processed_news ? (
+                        <ProcessedTextBlock
+                          title="Общие новости (ИИ)"
+                          text={g.processed_news}
+                          json={g.processed_news_json}
+                        />
+                      ) : null}
+                      {generalSubTab === "clusters" && g.processed_clusters ? (
+                        <ProcessedTextBlock
+                          title="Кластеры похожих новостей (ИИ)"
+                          text={g.processed_clusters}
+                          json={g.processed_clusters_json}
+                        />
+                      ) : null}
+                      {generalSubTab === "indicators" && g.processed_indicators ? (
+                        <ProcessedTextBlock
+                          title="Индикаторы (ИИ)"
+                          text={g.processed_indicators}
+                          json={g.processed_indicators_json}
+                        />
                       ) : null}
                     </div>
-                  ))}
+                  ) : null}
+                  {resultTab === "competitors" && compCount > 0 ? (
+                    <EntityPickerPanel
+                      entries={g.processed_competitors_by_name}
+                      jsonByName={g.processed_competitors_by_name_json ?? {}}
+                      activeName={competitorTab}
+                      onPick={setCompetitorTab}
+                      emptyLabel="Нет саммари по конкурентам"
+                    />
+                  ) : null}
+                  {resultTab === "developers" && devCount > 0 ? (
+                    <EntityPickerPanel
+                      entries={g.processed_developers_by_name}
+                      jsonByName={g.processed_developers_by_name_json ?? {}}
+                      activeName={developerTab}
+                      onPick={setDeveloperTab}
+                      emptyLabel="Нет саммари по застройщикам"
+                    />
+                  ) : null}
+                  {resultTab === "regions" && regCount > 0 ? (
+                    <EntityPickerPanel
+                      entries={g.processed_regions_by_name}
+                      jsonByName={g.processed_regions_by_name_json ?? {}}
+                      activeName={regionTab}
+                      onPick={setRegionTab}
+                      emptyLabel="Нет саммари по регионам"
+                    />
+                  ) : null}
                 </div>
               </div>
-            ) : null}
-            {Object.keys(generated.processed_competitors_by_name || {}).length > 0 ? (
-              <div>
-                <h3 className="text-xs font-medium text-slate-600">Саммари по конкурентам</h3>
-                <div className="mt-1 space-y-2">
-                  {Object.entries(generated.processed_competitors_by_name).map(([name, text]) => (
-                    <div key={name}>
-                      <div className="text-xs font-semibold text-slate-700">{name}</div>
-                      <pre className="max-h-40 overflow-y-auto whitespace-pre-wrap rounded bg-slate-50 p-2 text-xs">{text}</pre>
-                      {(generated.processed_competitors_by_name_json ?? {})[name] ? (
-                        <details className="mt-1">
-                          <summary className="cursor-pointer text-xs text-sky-700">JSON</summary>
-                          <pre className="mt-1 max-h-40 overflow-y-auto rounded border bg-white p-2 text-xs">
-                            {JSON.stringify((generated.processed_competitors_by_name_json ?? {})[name], null, 2)}
-                          </pre>
-                        </details>
-                      ) : null}
-                    </div>
-                  ))}
-                </div>
-              </div>
-            ) : null}
-            {Object.keys(generated.processed_regions_by_name || {}).length > 0 ? (
-              <div>
-                <h3 className="text-xs font-medium text-slate-600">Саммари по регионам</h3>
-                <div className="mt-1 space-y-2">
-                  {Object.entries(generated.processed_regions_by_name).map(([name, text]) => (
-                    <div key={name}>
-                      <div className="text-xs font-semibold text-slate-700">{name}</div>
-                      <pre className="max-h-40 overflow-y-auto whitespace-pre-wrap rounded bg-slate-50 p-2 text-xs">{text}</pre>
-                      {(generated.processed_regions_by_name_json ?? {})[name] ? (
-                        <details className="mt-1">
-                          <summary className="cursor-pointer text-xs text-sky-700">JSON</summary>
-                          <pre className="mt-1 max-h-40 overflow-y-auto rounded border bg-white p-2 text-xs">
-                            {JSON.stringify((generated.processed_regions_by_name_json ?? {})[name], null, 2)}
-                          </pre>
-                        </details>
-                      ) : null}
-                    </div>
-                  ))}
-                </div>
-              </div>
-            ) : null}
-          </div>
+            );
+          })()}
         </div>
       ) : null}
     </div>

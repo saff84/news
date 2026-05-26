@@ -13,7 +13,7 @@ from telethon.sessions import StringSession
 from app.core.settings import settings
 from app.models.domain import NewsItem, Source, TgChannelState
 from app.services.telegram_config import get_telegram_config
-from app.parsers.keyword_filter import should_keep_item
+from app.services.news_filter_config import should_keep_news_item
 from app.parsers.normalize import canonicalize_url, normalize_text, period_month_from_dt, sha256_hex, simhash64
 from app.tagging.rules import tag_item
 
@@ -112,7 +112,7 @@ async def _ingest_async(db: Session, *, source: Source) -> dict[str, Any]:
                 published_at = published_at.replace(tzinfo=dt.timezone.utc)
 
             search_text = " ".join([str(url or ""), title or "", content_text])
-            if not should_keep_item(search_text, source.settings_json):
+            if not should_keep_news_item(db, search_text, source.settings_json):
                 continue
 
             norm_hash = sha256_hex(content_text) if content_text else None

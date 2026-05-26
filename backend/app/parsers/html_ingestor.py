@@ -13,7 +13,7 @@ from app.models.domain import NewsItem, ParsingTemplate, Source
 from app.parsers.html_template_engine import extract_from_html
 from app.parsers.limits import acquire_rate_slot, domain_key
 from app.parsers.normalize import canonicalize_url, normalize_text, period_month_from_dt, sha256_hex, simhash64
-from app.parsers.keyword_filter import should_keep_item
+from app.services.news_filter_config import should_keep_news_item
 from app.parsers.robots import can_fetch
 from app.parsers.sitemap import SitemapUrl, fetch_sitemap_urls
 from app.tagging.rules import tag_item
@@ -197,7 +197,7 @@ def ingest_html(db: Session, *, source: Source) -> dict[str, Any]:
         author = extracted.author
 
         search_text = " ".join([str(url or ""), str(title or ""), str(content_text or "")])
-        if not should_keep_item(search_text, source.settings_json):
+        if not should_keep_news_item(db, search_text, source.settings_json):
             continue
 
         norm = normalize_text(content_text or "")

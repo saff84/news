@@ -530,7 +530,13 @@ export function SourcesPage() {
 
               <div className="rounded-lg border-2 border-amber-200 bg-amber-50 p-4">
                 <div className="text-sm font-bold text-slate-800">Фильтр по словам</div>
-                <p className="mt-1 text-xs text-slate-600">При сборе сохраняются только новости, прошедшие фильтр. Пусто = без фильтра.</p>
+                <p className="mt-1 text-xs text-slate-600">
+                  При сборе сохраняются только новости, прошедшие фильтр. Пусто = без фильтра.{" "}
+                  <Link to="/news-filter" className="text-sky-700 underline">
+                    Глобальные минус-слова
+                  </Link>{" "}
+                  действуют на все источники дополнительно к полям ниже.
+                </p>
                 <p className="mt-1 text-xs text-amber-700">
                   <b>Формат ключей:</b> через запятую, пробел, точку с запятой или с новой строки. Примеры: <code>слово1, слово2</code> или каждое слово на новой строке.
                 </p>

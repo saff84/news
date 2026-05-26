@@ -9,7 +9,7 @@ from sqlalchemy.orm import Session
 
 from app.core.settings import settings
 from app.models.domain import NewsItem, Source, VkGroupState
-from app.parsers.keyword_filter import should_keep_item
+from app.services.news_filter_config import should_keep_news_item
 from app.parsers.normalize import canonicalize_url, normalize_text, period_month_from_dt, sha256_hex, simhash64
 from app.tagging.rules import tag_item
 
@@ -135,7 +135,7 @@ def ingest_vk_group(db: Session, *, source: Source) -> dict[str, Any]:
         published_at = dt.datetime.fromtimestamp(ts, tz=dt.timezone.utc) if ts else None
 
         search_text = " ".join([url, title or "", norm_text])
-        if not should_keep_item(search_text, source.settings_json):
+        if not should_keep_news_item(db, search_text, source.settings_json):
             continue
 
         norm_hash = sha256_hex(norm_text) if norm_text else None

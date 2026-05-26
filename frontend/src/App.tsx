@@ -1,5 +1,5 @@
 import * as Dialog from "@radix-ui/react-dialog";
-import { Activity, Bot, Building2, CalendarClock, FileText, LayoutTemplate, LineChart, LogOut, Map, Menu, MessageCircle, MessageSquare, MessageSquareMore, Newspaper, Rss, Users, Wrench, X } from "lucide-react";
+import { Activity, Bot, Building2, CalendarClock, FileText, Filter, LayoutTemplate, LineChart, LogOut, Map, Menu, MessageCircle, MessageSquare, MessageSquareMore, Newspaper, Rss, Users, Wrench, X } from "lucide-react";
 import { Navigate, Route, Routes, Link, NavLink, useLocation, useNavigate } from "react-router-dom";
 import { useAuth } from "./state/auth";
 import { LoginPage } from "./pages/LoginPage";
@@ -16,6 +16,7 @@ import { TelegramParserPage } from "./pages/TelegramParserPage";
 import { MaxParserPage } from "./pages/MaxParserPage";
 import { VkParserPage } from "./pages/VkParserPage";
 import { NewsPage } from "./pages/NewsPage";
+import { NewsFilterPage } from "./pages/NewsFilterPage";
 import { ReportConfigPage } from "./pages/ReportConfigPage";
 import { AIConfigPage } from "./pages/AIConfigPage";
 
@@ -85,6 +86,11 @@ function SidebarNav({ variant }: { variant?: "static" | "dialog" }) {
         </MenuLink>,
       )}
       {wrap(
+        <MenuLink to="/news-filter" icon={<Filter className="h-4 w-4" />}>
+          Фильтры новостей
+        </MenuLink>,
+      )}
+      {wrap(
         <MenuLink to="/monitoring" icon={<Activity className="h-4 w-4" />}>
           Мониторинг
         </MenuLink>,
@@ -141,6 +147,7 @@ function Shell({ children }: { children: React.ReactNode }) {
     if (loc.pathname.startsWith("/developers")) return "Застройщики";
     if (loc.pathname.startsWith("/sources")) return "Источники";
     if (loc.pathname.startsWith("/parsing-templates")) return "Шаблоны парсинга";
+    if (loc.pathname.startsWith("/news-filter")) return "Фильтры новостей";
     if (loc.pathname.startsWith("/news")) return "Новости";
     if (loc.pathname.startsWith("/crawl-schedule")) return "Планировка обхода";
     if (loc.pathname.startsWith("/monitoring")) return "Мониторинг";
@@ -286,6 +293,16 @@ export function App() {
           <RequireAuth>
             <Shell>
               <ParsingTemplatesPage />
+            </Shell>
+          </RequireAuth>
+        }
+      />
+      <Route
+        path="/news-filter"
+        element={
+          <RequireAuth>
+            <Shell>
+              <NewsFilterPage />
             </Shell>
           </RequireAuth>
         }

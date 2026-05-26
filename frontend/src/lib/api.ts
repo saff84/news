@@ -602,6 +602,39 @@ export const api = {
         report_month: string | null;
       }>("/api/report-config", { method: "PUT", body: JSON.stringify(payload) }, accessToken),
   },
+  newsFilter: {
+    get: (accessToken: string) =>
+      request<{
+        global_exclude_keywords: string[];
+        global_include_keywords: string[];
+        match_whole_words: boolean;
+      }>("/api/news-filter", { method: "GET" }, accessToken),
+    update: (
+      accessToken: string,
+      payload: {
+        global_exclude_keywords?: string[];
+        global_include_keywords?: string[];
+        match_whole_words?: boolean;
+      },
+    ) =>
+      request<{
+        global_exclude_keywords: string[];
+        global_include_keywords: string[];
+        match_whole_words: boolean;
+      }>("/api/news-filter", { method: "PUT", body: JSON.stringify(payload) }, accessToken),
+    preview: (accessToken: string, payload: { text: string; source_id?: string }) =>
+      request<{ keep: boolean; reason: string; matched_keywords: string[] }>(
+        "/api/news-filter/preview",
+        { method: "POST", body: JSON.stringify(payload) },
+        accessToken,
+      ),
+    cleanup: (accessToken: string, payload?: { source_id?: string; dry_run?: boolean }) =>
+      request<{ deleted: number; total_checked: number; dry_run: boolean }>(
+        "/api/news-filter/cleanup",
+        { method: "POST", body: JSON.stringify(payload || {}) },
+        accessToken,
+      ),
+  },
   aiConfig: {
     get: (accessToken: string) =>
       request<{
