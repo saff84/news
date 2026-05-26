@@ -4,7 +4,9 @@ from __future__ import annotations
 
 from collections import defaultdict
 from datetime import date, datetime, timedelta, timezone
-from typing import Any
+from typing import Any, Callable
+
+ProgressCallback = Callable[[dict[str, Any]], None]
 
 from sqlalchemy import and_
 from sqlalchemy.orm import Session
@@ -440,6 +442,11 @@ def _parse_report_month(s: str | None) -> tuple[date, date, date | None] | None:
     return None
 
 
+def _emit_progress(cb: ProgressCallback | None, event: dict[str, Any]) -> None:
+    if cb:
+        cb(event)
+
+
 def generate_report(
     db: Session,
     *,
@@ -447,6 +454,7 @@ def generate_report(
     date_to: date | None = None,
     date_range_days: int | None = None,
     report_month: str | None = None,
+    progress: ProgressCallback | None = None,
 ) -> dict[str, Any]:
     """
     Generate report: fetch data, process with AI per section, return processed data for PDF.
@@ -515,12 +523,27 @@ def generate_report(
     def _run_ai(
         *,
         label: str,
+        title: str,
         prompt: str,
         data: str,
         link_hint: bool = True,
     ) -> tuple[str, dict[str, Any] | None]:
         if not runtime.api_key or not prompt.strip():
+            _emit_progress(
+                progress,
+                {"type": "step_skip", "step_id": label, "title": title, "reason": "no_api_or_prompt"},
+            )
             return "", None
+        _emit_progress(
+            progress,
+            {
+                "type": "step_send",
+                "step_id": label,
+                "title": title,
+                "chars_in": len(data),
+                "prompt_chars": len(prompt),
+            },
+        )
         pause_before_ai_call(runtime.request_delay_seconds, label=label)
         ai_stats.calls += 1
         try:
@@ -536,11 +559,34 @@ def generate_report(
                 log_label=label,
             )
             ai_stats.succeeded += 1
+            preview = (text or "").strip().replace("\n", " ")[:400]
+            _emit_progress(
+                progress,
+                {
+                    "type": "step_receive",
+                    "step_id": label,
+                    "title": title,
+                    "ok": True,
+                    "chars_out": len(text or ""),
+                    "preview": preview,
+                },
+            )
             return text, payload
         except AIValidationError as e:
             ai_stats.failed += 1
             ai_stats.labels_failed.append(label)
-            return f"[Ошибка ИИ: {e}]", None
+            err = str(e)
+            _emit_progress(
+                progress,
+                {
+                    "type": "step_receive",
+                    "step_id": label,
+                    "title": title,
+                    "ok": False,
+                    "error": err,
+                },
+            )
+            return f"[Ошибка ИИ: {err}]", None
 
     all_news = raw["news"]
     competitor_news = [n for n in all_news if n.competitor_id or (n.competitor_mentions and len(n.competitor_mentions) > 0)]
@@ -583,6 +629,37 @@ def generate_report(
     developer_groups = _group_developer_news(developer_news, developer_names_map)
     region_groups = _group_region_news(all_news, region_map)
 
+    plan_steps: list[dict[str, str]] = []
+    if report_cfg.get("include_news", True) and competitor_news and (ai_cfg.get("prompt_competitors") or "").strip() and runtime.api_key:
+        for cname in sorted(competitor_groups.keys()):
+            plan_steps.append({"step_id": f"competitor:{cname}", "title": f"Конкурент: {cname}"})
+    if report_cfg.get("include_news", True) and developer_news:
+        prompt_dev_chk = (ai_cfg.get("prompt_developers") or "").strip() or (ai_cfg.get("prompt_competitors") or "").strip()
+        if prompt_dev_chk and runtime.api_key:
+            for dname in sorted(developer_groups.keys()):
+                plan_steps.append({"step_id": f"developer:{dname}", "title": f"Застройщик: {dname}"})
+    if report_cfg.get("include_news", True) and general_news and (ai_cfg.get("prompt_news") or "").strip() and runtime.api_key:
+        plan_steps.append({"step_id": "news:general", "title": "Общие новости"})
+    if report_cfg.get("include_indicators", True) and (ai_cfg.get("prompt_indicators") or "").strip() and runtime.api_key:
+        plan_steps.append({"step_id": "indicators", "title": "Индикаторы"})
+    if report_cfg.get("include_regions", True) and (ai_cfg.get("prompt_regions") or "").strip() and runtime.api_key:
+        for rname in sorted(region_groups.keys()):
+            if region_groups.get(rname):
+                plan_steps.append({"step_id": f"region:{rname}", "title": f"Регион: {rname}"})
+    if report_cfg.get("include_news", True) and all_news and (ai_cfg.get("prompt_clusters") or "").strip() and runtime.api_key:
+        plan_steps.append({"step_id": "clusters", "title": "Кластеры новостей"})
+
+    _emit_progress(
+        progress,
+        {
+            "type": "plan",
+            "total_steps": len(plan_steps),
+            "steps": plan_steps,
+            "provider": runtime.provider,
+            "model": runtime.model,
+        },
+    )
+
     if report_cfg.get("include_news", True) and competitor_news:
         prompt_comp = (ai_cfg.get("prompt_competitors") or "").strip()
         for cname, items in sorted(competitor_groups.items()):
@@ -594,6 +671,7 @@ def generate_report(
             if prompt_comp and runtime.api_key:
                 text, payload = _run_ai(
                     label=f"competitor:{cname}",
+                    title=f"Конкурент: {cname}",
                     prompt=prompt_comp,
                     data=entity_data,
                 )
@@ -610,6 +688,7 @@ def generate_report(
             if prompt_dev and runtime.api_key:
                 text, payload = _run_ai(
                     label=f"developer:{dname}",
+                    title=f"Застройщик: {dname}",
                     prompt=prompt_dev,
                     data=entity_data,
                 )
@@ -623,7 +702,12 @@ def generate_report(
         prompt_news = (ai_cfg.get("prompt_news") or "").strip()
         data_str = _serialize_news_for_ai(general_news)
         if prompt_news and runtime.api_key:
-            text, payload = _run_ai(label="news:general", prompt=prompt_news, data=data_str)
+            text, payload = _run_ai(
+                label="news:general",
+                title="Общие новости",
+                prompt=prompt_news,
+                data=data_str,
+            )
             result["processed_news"] = text
             if payload is not None:
                 result["processed_news_json"] = payload
@@ -636,6 +720,7 @@ def generate_report(
         if prompt_ind and runtime.api_key:
             text, payload = _run_ai(
                 label="indicators",
+                title="Индикаторы",
                 prompt=prompt_ind,
                 data=data_str,
                 link_hint=False,
@@ -655,6 +740,7 @@ def generate_report(
             if prompt_reg and runtime.api_key:
                 text, payload = _run_ai(
                     label=f"region:{rname}",
+                    title=f"Регион: {rname}",
                     prompt=prompt_reg,
                     data=entity_data,
                 )
@@ -672,7 +758,12 @@ def generate_report(
             prompt_cl = (ai_cfg.get("prompt_clusters") or "").strip()
             data_str = _serialize_clusters(db, clusters_list)
             if prompt_cl and runtime.api_key:
-                text, payload = _run_ai(label="clusters", prompt=prompt_cl, data=data_str)
+                text, payload = _run_ai(
+                    label="clusters",
+                    title="Кластеры новостей",
+                    prompt=prompt_cl,
+                    data=data_str,
+                )
                 result["processed_clusters"] = text
                 if payload is not None:
                     result["processed_clusters_json"] = payload
@@ -688,5 +779,15 @@ def generate_report(
     # Remove raw from payload for response (optional)
     if "processed_raw" in result:
         del result["processed_raw"]
+
+    ready = ai_stats.calls == 0 or ai_stats.succeeded > 0
+    _emit_progress(
+        progress,
+        {
+            "type": "ready",
+            "ready": ready,
+            "message": "Данные от ИИ получены. Можно опубликовать HTML-отчёт." if ready else "ИИ не вернул данных.",
+        },
+    )
 
     return result

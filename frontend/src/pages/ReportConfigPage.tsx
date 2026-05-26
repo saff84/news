@@ -1,5 +1,5 @@
-import { useEffect, useState } from "react";
-import { FileText, Loader2, Save } from "lucide-react";
+import { useEffect, useRef, useState } from "react";
+import { ArrowDownLeft, ArrowUpRight, CheckCircle2, FileText, Loader2, Save, Trash2, XCircle } from "lucide-react";
 import { api } from "../lib/api";
 import { useAuth } from "../state/auth";
 import { useToast } from "../state/toast";
@@ -17,6 +17,91 @@ type ReportConfig = {
   date_range_days: number;
   report_month: string | null;
 };
+
+type GeneratedReport = {
+  report_config: { title: string; subtitle: string; company_name: string; company_address: string; footer_text: string };
+  period: { date_from: string; date_to: string };
+  ai_stats?: {
+    calls: number;
+    succeeded: number;
+    failed: number;
+    labels_failed: string[];
+    request_delay_seconds: number;
+    max_retries: number;
+  };
+  processed_news: string | null;
+  processed_competitors: string | null;
+  processed_indicators: string | null;
+  processed_regions: string | null;
+  processed_clusters: string | null;
+  processed_news_json: Record<string, unknown> | null;
+  processed_indicators_json: Record<string, unknown> | null;
+  processed_clusters_json: Record<string, unknown> | null;
+  processed_competitors_by_name: Record<string, string>;
+  processed_developers_by_name: Record<string, string>;
+  processed_regions_by_name: Record<string, string>;
+  processed_competitors_by_name_json: Record<string, Record<string, unknown>>;
+  processed_developers_by_name_json: Record<string, Record<string, unknown>>;
+  processed_regions_by_name_json: Record<string, Record<string, unknown>>;
+};
+
+type AiStepStatus = "pending" | "sending" | "receiving" | "done" | "error" | "skipped";
+
+type AiStep = {
+  stepId: string;
+  title: string;
+  status: AiStepStatus;
+  charsIn?: number;
+  charsOut?: number;
+  preview?: string;
+  error?: string;
+};
+
+function applyAiStreamEvent(steps: AiStep[], event: Record<string, unknown>): AiStep[] {
+  const type = String(event.type || "");
+  if (type === "plan" && Array.isArray(event.steps)) {
+    return (event.steps as Array<{ step_id?: string; title?: string }>).map((s) => ({
+      stepId: String(s.step_id || ""),
+      title: String(s.title || s.step_id || ""),
+      status: "pending" as const,
+    }));
+  }
+  const stepId = String(event.step_id || "");
+  if (!stepId) return steps;
+  const idx = steps.findIndex((s) => s.stepId === stepId);
+  const patch = (prev: AiStep): AiStep => {
+    if (type === "step_send") {
+      return { ...prev, status: "sending", charsIn: Number(event.chars_in) || 0 };
+    }
+    if (type === "step_receive") {
+      const ok = event.ok !== false;
+      return {
+        ...prev,
+        status: ok ? "done" : "error",
+        charsOut: Number(event.chars_out) || 0,
+        preview: event.preview ? String(event.preview) : undefined,
+        error: event.error ? String(event.error) : undefined,
+      };
+    }
+    if (type === "step_skip") {
+      return { ...prev, status: "skipped" };
+    }
+    return prev;
+  };
+  if (idx >= 0) {
+    const next = [...steps];
+    next[idx] = patch(next[idx]);
+    return next;
+  }
+  return [
+    ...steps,
+    patch({
+      stepId,
+      title: String(event.title || stepId),
+      status: "pending",
+    }),
+  ];
+}
 
 export function ReportConfigPage() {
   const { accessToken, user } = useAuth();
@@ -54,32 +139,12 @@ export function ReportConfigPage() {
       created_at: string;
     }>
   >([]);
-  const [generated, setGenerated] = useState<{
-    report_config: { title: string; subtitle: string; company_name: string; company_address: string; footer_text: string };
-    period: { date_from: string; date_to: string };
-    ai_stats?: {
-      calls: number;
-      succeeded: number;
-      failed: number;
-      labels_failed: string[];
-      request_delay_seconds: number;
-      max_retries: number;
-    };
-    processed_news: string | null;
-    processed_competitors: string | null;
-    processed_indicators: string | null;
-    processed_regions: string | null;
-    processed_clusters: string | null;
-    processed_news_json: Record<string, unknown> | null;
-    processed_indicators_json: Record<string, unknown> | null;
-    processed_clusters_json: Record<string, unknown> | null;
-    processed_competitors_by_name: Record<string, string>;
-    processed_developers_by_name: Record<string, string>;
-    processed_regions_by_name: Record<string, string>;
-    processed_competitors_by_name_json: Record<string, Record<string, unknown>>;
-    processed_developers_by_name_json: Record<string, Record<string, unknown>>;
-    processed_regions_by_name_json: Record<string, Record<string, unknown>>;
-  } | null>(null);
+  const [generated, setGenerated] = useState<GeneratedReport | null>(null);
+  const [aiSteps, setAiSteps] = useState<AiStep[]>([]);
+  const [aiStreamMeta, setAiStreamMeta] = useState<{ provider?: string; model?: string; total?: number } | null>(null);
+  const [publishReady, setPublishReady] = useState<{ ready: boolean; message: string } | null>(null);
+  const [deleteBusyId, setDeleteBusyId] = useState<string | null>(null);
+  const generateAbortRef = useRef<AbortController | null>(null);
 
   const reload = async () => {
     if (!accessToken) return;
@@ -120,7 +185,23 @@ export function ReportConfigPage() {
   useEffect(() => {
     reload();
     reloadPublished();
+    return () => generateAbortRef.current?.abort();
   }, [accessToken]);
+
+  const handleDeletePublished = async (reportId: string) => {
+    if (!accessToken || !isAdmin) return;
+    if (!window.confirm("Удалить опубликованный HTML-отчёт? Ссылка перестанет работать.")) return;
+    setDeleteBusyId(reportId);
+    try {
+      await api.reports.deletePublished(accessToken, reportId);
+      await reloadPublished();
+      push({ variant: "success", title: "Удалено", description: "Отчёт удалён с сервера" });
+    } catch (e: unknown) {
+      push({ variant: "error", title: "Ошибка", description: e instanceof Error ? e.message : "Не удалось удалить" });
+    } finally {
+      setDeleteBusyId(null);
+    }
+  };
 
   const handleSave = async () => {
     if (!accessToken || !isAdmin) return;
@@ -392,16 +473,43 @@ export function ReportConfigPage() {
             className="inline-flex items-center gap-2 rounded border border-slate-300 bg-white px-3 py-2 text-sm text-slate-700 hover:bg-slate-50 disabled:opacity-50"
             onClick={async () => {
               if (!accessToken) return;
+              generateAbortRef.current?.abort();
+              const ac = new AbortController();
+              generateAbortRef.current = ac;
               setGenerateBusy(true);
               setGenerated(null);
+              setAiSteps([]);
+              setAiStreamMeta(null);
+              setPublishReady(null);
               try {
-                const r = await api.reports.generate(accessToken, {
-                  date_range_days: form.date_range_days,
-                  report_month: form.report_month || undefined,
-                });
+                const r = (await api.reports.generateStream(
+                  accessToken,
+                  {
+                    date_range_days: form.date_range_days,
+                    report_month: form.report_month || undefined,
+                  },
+                  (ev) => {
+                    if (ev.type === "plan") {
+                      setAiStreamMeta({
+                        provider: ev.provider ? String(ev.provider) : undefined,
+                        model: ev.model ? String(ev.model) : undefined,
+                        total: Number(ev.total_steps) || undefined,
+                      });
+                    }
+                    if (ev.type === "ready") {
+                      setPublishReady({
+                        ready: ev.ready !== false,
+                        message: String(ev.message || "Готово к публикации"),
+                      });
+                    }
+                    setAiSteps((prev) => applyAiStreamEvent(prev, ev));
+                  },
+                  ac.signal,
+                )) as GeneratedReport;
                 setGenerated(r);
                 push({ variant: "success", title: "Готово", description: "Данные обработаны ИИ" });
               } catch (e: unknown) {
+                if (e instanceof Error && e.name === "AbortError") return;
                 push({ variant: "error", title: "Ошибка", description: e instanceof Error ? e.message : "Не удалось сгенерировать" });
               } finally {
                 setGenerateBusy(false);
@@ -414,6 +522,135 @@ export function ReportConfigPage() {
           </button>
           {saveSuccess ? <span className="text-sm text-emerald-600">Сохранено</span> : null}
         </div>
+
+        {(generateBusy || aiSteps.length > 0) ? (
+          <div className="mt-4 rounded border border-slate-200 bg-slate-50 p-3">
+            <h3 className="text-sm font-semibold text-slate-800">Обмен данными с ИИ</h3>
+            {aiStreamMeta ? (
+              <p className="mt-1 text-xs text-slate-600">
+                {aiStreamMeta.provider || "—"} / {aiStreamMeta.model || "—"}
+                {aiStreamMeta.total != null ? ` · шагов: ${aiStreamMeta.total}` : null}
+              </p>
+            ) : null}
+            <ul className="mt-2 space-y-2">
+              {aiSteps.map((step) => (
+                <li key={step.stepId} className="rounded border bg-white px-3 py-2 text-sm">
+                  <div className="flex flex-wrap items-center gap-2">
+                    {step.status === "sending" ? (
+                      <ArrowUpRight className="h-4 w-4 shrink-0 text-sky-600" aria-hidden />
+                    ) : step.status === "done" ? (
+                      <ArrowDownLeft className="h-4 w-4 shrink-0 text-emerald-600" aria-hidden />
+                    ) : step.status === "error" ? (
+                      <XCircle className="h-4 w-4 shrink-0 text-red-600" aria-hidden />
+                    ) : step.status === "skipped" ? (
+                      <CheckCircle2 className="h-4 w-4 shrink-0 text-slate-400" aria-hidden />
+                    ) : (
+                      <Loader2 className="h-4 w-4 shrink-0 animate-spin text-slate-400" aria-hidden />
+                    )}
+                    <span className="font-medium">{step.title}</span>
+                    <span className="text-xs text-slate-500">
+                      {step.status === "pending" && "ожидание"}
+                      {step.status === "sending" && "отправка в ИИ…"}
+                      {step.status === "receiving" && "получение ответа…"}
+                      {step.status === "done" && "получено"}
+                      {step.status === "error" && "ошибка"}
+                      {step.status === "skipped" && "пропущено"}
+                    </span>
+                  </div>
+                  {(step.charsIn != null && step.charsIn > 0) || (step.charsOut != null && step.charsOut > 0) ? (
+                    <div className="mt-1 flex flex-wrap gap-3 text-xs text-slate-600">
+                      {step.charsIn != null && step.charsIn > 0 ? (
+                        <span className="inline-flex items-center gap-1">
+                          <ArrowUpRight className="h-3 w-3 text-sky-600" />
+                          в ИИ: {step.charsIn.toLocaleString("ru-RU")} симв.
+                        </span>
+                      ) : null}
+                      {step.charsOut != null && step.charsOut > 0 ? (
+                        <span className="inline-flex items-center gap-1">
+                          <ArrowDownLeft className="h-3 w-3 text-emerald-600" />
+                          от ИИ: {step.charsOut.toLocaleString("ru-RU")} симв.
+                        </span>
+                      ) : null}
+                    </div>
+                  ) : null}
+                  {step.preview ? (
+                    <p className="mt-1 line-clamp-2 text-xs text-slate-600">{step.preview}</p>
+                  ) : null}
+                  {step.error ? <p className="mt-1 text-xs text-red-700">{step.error}</p> : null}
+                </li>
+              ))}
+            </ul>
+            {generateBusy && aiSteps.length === 0 ? (
+              <p className="mt-2 text-xs text-slate-500">Сбор данных и план запросов к ИИ…</p>
+            ) : null}
+          </div>
+        ) : null}
+
+        {publishReady && generated && !generateBusy ? (
+          <div
+            className={`mt-4 rounded-lg border-2 p-4 ${
+              publishReady.ready ? "border-emerald-500 bg-emerald-50" : "border-amber-400 bg-amber-50"
+            }`}
+          >
+            <div className="flex flex-wrap items-start gap-3">
+              <CheckCircle2
+                className={`h-6 w-6 shrink-0 ${publishReady.ready ? "text-emerald-700" : "text-amber-700"}`}
+              />
+              <div className="min-w-0 flex-1">
+                <p className={`font-semibold ${publishReady.ready ? "text-emerald-900" : "text-amber-900"}`}>
+                  {publishReady.ready ? "Готово к публикации" : "Публикация с предупреждением"}
+                </p>
+                <p className={`mt-1 text-sm ${publishReady.ready ? "text-emerald-800" : "text-amber-800"}`}>
+                  {publishReady.message}
+                </p>
+                <p className={`mt-1 text-xs ${publishReady.ready ? "text-emerald-700" : "text-amber-700"}`}>
+                  Период: {generated.period.date_from} — {generated.period.date_to}. Публикация HTML без повторных запросов к ИИ.
+                </p>
+              </div>
+              <button
+                type="button"
+                className="inline-flex items-center gap-2 rounded bg-violet-700 px-4 py-2 text-sm font-medium text-white hover:bg-violet-800 disabled:opacity-50"
+                disabled={publishBusy}
+                onClick={async () => {
+                  if (!accessToken || !generated) return;
+                  setPublishBusy(true);
+                  try {
+                    const meta = await api.reports.publishHtml(accessToken, {
+                      date_from: generated.period.date_from,
+                      date_to: generated.period.date_to,
+                      report_month: form.report_month || undefined,
+                      skip_ai: true,
+                      processed_indicators: generated.processed_indicators ?? undefined,
+                      processed_news: generated.processed_news ?? undefined,
+                      processed_clusters: generated.processed_clusters ?? undefined,
+                      processed_news_json: generated.processed_news_json ?? undefined,
+                      processed_indicators_json: generated.processed_indicators_json ?? undefined,
+                      processed_clusters_json: generated.processed_clusters_json ?? undefined,
+                      processed_competitors_by_name: generated.processed_competitors_by_name,
+                      processed_developers_by_name: generated.processed_developers_by_name,
+                      processed_regions_by_name: generated.processed_regions_by_name,
+                      processed_competitors_by_name_json: generated.processed_competitors_by_name_json,
+                      processed_developers_by_name_json: generated.processed_developers_by_name_json,
+                      processed_regions_by_name_json: generated.processed_regions_by_name_json,
+                    });
+                    const url = `${window.location.origin}${meta.public_path}`;
+                    await reloadPublished();
+                    push({ variant: "success", title: "HTML опубликован", description: url });
+                    window.open(url, "_blank", "noopener,noreferrer");
+                  } catch (e: unknown) {
+                    push({ variant: "error", title: "Ошибка", description: e instanceof Error ? e.message : "Не удалось опубликовать" });
+                  } finally {
+                    setPublishBusy(false);
+                  }
+                }}
+              >
+                {publishBusy ? <Loader2 className="h-4 w-4 animate-spin" /> : <FileText className="h-4 w-4" />}
+                Опубликовать HTML-страницу
+              </button>
+            </div>
+          </div>
+        ) : null}
+
         {!isAdmin ? (
           <div className="mt-3 rounded border border-amber-200 bg-amber-50 p-2 text-xs text-amber-800">
             Редактирование доступно только роли Admin.
@@ -437,6 +674,22 @@ export function ReportConfigPage() {
                   <a href={href} target="_blank" rel="noopener noreferrer" className="text-sky-700 underline">
                     {item.public_path}
                   </a>
+                  {isAdmin ? (
+                    <button
+                      type="button"
+                      className="ml-auto inline-flex items-center gap-1 rounded border border-red-200 px-2 py-1 text-xs text-red-700 hover:bg-red-50 disabled:opacity-50"
+                      disabled={deleteBusyId === item.id}
+                      onClick={() => handleDeletePublished(item.id)}
+                      title="Удалить отчёт"
+                    >
+                      {deleteBusyId === item.id ? (
+                        <Loader2 className="h-3 w-3 animate-spin" />
+                      ) : (
+                        <Trash2 className="h-3 w-3" />
+                      )}
+                      Удалить
+                    </button>
+                  ) : null}
                 </li>
               );
             })}

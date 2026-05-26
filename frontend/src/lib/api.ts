@@ -793,6 +793,51 @@ export const api = {
           created_at: string;
         }>;
       }>(`/api/reports/published?limit=${limit}`, { method: "GET" }, accessToken),
+    deletePublished: (accessToken: string, reportId: string) =>
+      request<{ ok: boolean }>(`/api/reports/published/${encodeURIComponent(reportId)}`, { method: "DELETE" }, accessToken),
+    generateStream: async (
+      accessToken: string,
+      params: { date_from?: string; date_to?: string; date_range_days?: number; report_month?: string } | undefined,
+      onEvent: (event: Record<string, unknown>) => void,
+      signal?: AbortSignal,
+    ) => {
+      const res = await fetch(`${API_BASE}/api/reports/generate-stream`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${accessToken}`,
+        },
+        body: JSON.stringify(params || {}),
+        signal,
+      });
+      if (!res.ok) {
+        const text = await res.text();
+        throw new Error(text || `HTTP ${res.status}`);
+      }
+      const reader = res.body?.getReader();
+      if (!reader) throw new Error("Нет тела ответа");
+      const decoder = new TextDecoder();
+      let buffer = "";
+      let result: Record<string, unknown> | null = null;
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        buffer += decoder.decode(value, { stream: true });
+        const chunks = buffer.split("\n\n");
+        buffer = chunks.pop() || "";
+        for (const chunk of chunks) {
+          for (const line of chunk.split("\n")) {
+            if (!line.startsWith("data: ")) continue;
+            const ev = JSON.parse(line.slice(6)) as Record<string, unknown>;
+            onEvent(ev);
+            if (ev.type === "complete" && ev.result) result = ev.result as Record<string, unknown>;
+            if (ev.type === "error") throw new Error(String(ev.message || "Ошибка генерации"));
+          }
+        }
+      }
+      if (!result) throw new Error("Поток завершился без результата");
+      return result;
+    },
   },
 };
 

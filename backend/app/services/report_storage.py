@@ -114,6 +114,30 @@ def prune_published_reports(
     return removed
 
 
+def delete_published_report(report_id: str) -> bool:
+    """Удалить опубликованный HTML-отчёт и meta JSON. Возвращает False, если не найден."""
+    rid = (report_id or "").strip()
+    if not rid:
+        return False
+    d = _reports_dir()
+    meta_path = d / f"{rid}.json"
+    if not meta_path.is_file():
+        return False
+    html_name = f"{rid}.html"
+    try:
+        data = json.loads(meta_path.read_text(encoding="utf-8"))
+        if isinstance(data, dict) and data.get("filename"):
+            html_name = str(data["filename"])
+    except Exception:
+        pass
+    meta_path.unlink(missing_ok=True)
+    html_path = d / html_name
+    if html_path.is_file():
+        html_path.unlink()
+    log.info("deleted published report", extra={"report_id": rid})
+    return True
+
+
 def list_published_reports(*, limit: int = 30) -> list[dict[str, Any]]:
     items: list[dict[str, Any]] = []
     for meta_path in sorted(_reports_dir().glob("*.json"), key=lambda p: p.stat().st_mtime, reverse=True):

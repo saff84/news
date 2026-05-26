@@ -2,22 +2,25 @@
 
 from __future__ import annotations
 
+import json
+import queue
+import threading
 from datetime import date
 from typing import Any
 
-from fastapi import APIRouter, Body, Depends
-from fastapi.responses import Response
+from fastapi import APIRouter, Body, Depends, HTTPException
+from fastapi.responses import Response, StreamingResponse
 from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 
 from app.core.deps import require_role
-from app.db import get_db
+from app.db import SessionLocal, get_db
 from app.models.auth import Role, User
 from app.services.report_html_builder import build_report_html
 from app.services.pdf_builder import build_report_pdf
 from app.services.report_config import get_report_config
 from app.services.report_generator import generate_report, get_report_data_for_pdf, _parse_report_month
-from app.services.report_storage import list_published_reports, save_published_html
+from app.services.report_storage import delete_published_report, list_published_reports, save_published_html
 
 router = APIRouter(prefix="/reports", tags=["reports"])
 
@@ -372,3 +375,67 @@ def list_published(
     """Список опубликованных HTML-отчётов (последние сверху)."""
     items = [ReportPublishedOut(**m) for m in list_published_reports(limit=limit)]
     return ReportPublishedListOut(items=items)
+
+
+@router.delete("/published/{report_id}")
+def delete_published(
+    report_id: str,
+    user: User = Depends(require_role(Role.ADMIN)),
+) -> dict[str, bool]:
+    """Удалить опубликованный HTML-отчёт с диска."""
+    if not delete_published_report(report_id):
+        raise HTTPException(status_code=404, detail="Отчёт не найден")
+    return {"ok": True}
+
+
+@router.post("/generate-stream")
+def generate_stream(
+    payload: ReportGenerateIn | None = Body(default=None),
+    user: User = Depends(require_role(Role.ADMIN, Role.ANALYST)),
+) -> StreamingResponse:
+    """
+    Генерация отчёта с SSE: план шагов ИИ, отправка/получение по каждому разделу, complete с результатом.
+    """
+    p = payload or ReportGenerateIn()
+
+    def event_stream():
+        event_q: queue.Queue[dict[str, Any] | None] = queue.Queue()
+
+        def progress(ev: dict[str, Any]) -> None:
+            event_q.put(ev)
+
+        def run() -> None:
+            db = SessionLocal()
+            try:
+                result = generate_report(
+                    db,
+                    date_from=p.date_from,
+                    date_to=p.date_to,
+                    date_range_days=p.date_range_days,
+                    report_month=p.report_month,
+                    progress=progress,
+                )
+                event_q.put({"type": "complete", "result": result})
+            except Exception as e:
+                event_q.put({"type": "error", "message": str(e)})
+            finally:
+                db.close()
+                event_q.put(None)
+
+        threading.Thread(target=run, daemon=True).start()
+
+        while True:
+            ev = event_q.get()
+            if ev is None:
+                break
+            yield f"data: {json.dumps(ev, ensure_ascii=False)}\n\n"
+
+    return StreamingResponse(
+        event_stream(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+            "X-Accel-Buffering": "no",
+        },
+    )
