@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import queue
 import threading
 from datetime import date
@@ -19,8 +20,15 @@ from app.models.auth import Role, User
 from app.services.report_html_builder import build_report_html
 from app.services.pdf_builder import build_report_pdf
 from app.services.report_config import get_report_config
-from app.services.report_generator import generate_report, get_report_data_for_pdf, _parse_report_month
+from app.services.report_generator import (
+    _parse_report_month,
+    fetch_report_data,
+    generate_report,
+    get_report_data_for_pdf,
+)
 from app.services.report_storage import delete_published_report, list_published_reports, save_published_html
+
+log = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/reports", tags=["reports"])
 
@@ -126,7 +134,12 @@ def _build_html_report_data(
     report_cfg: dict,
     report_month: str | None = None,
     generated: dict | None = None,
+    light: bool = False,
 ) -> dict:
+    """
+    light=True — после ИИ (skip_ai): только индикаторы + готовые processed_*,
+    без повторной загрузки тысяч новостей из БД (быстрее, меньше риска OOM/таймаута).
+    """
     if generated is None:
         generated = generate_report(
             db,
@@ -134,15 +147,39 @@ def _build_html_report_data(
             date_to=date_to,
             report_month=report_month,
         )
-    data = get_report_data_for_pdf(
-        db,
-        date_from=date_from,
-        date_to=date_to,
-        period_month=period_month_val,
-        include_news=report_cfg.get("include_news", True),
-        include_indicators=report_cfg.get("include_indicators", True),
-        include_regions=report_cfg.get("include_regions", True),
-    )
+    if light:
+        raw = fetch_report_data(
+            db,
+            date_from=date_from,
+            date_to=date_to,
+            period_month=period_month_val,
+            include_news=False,
+            include_indicators=report_cfg.get("include_indicators", True),
+            include_regions=False,
+        )
+        data = {
+            "news": [],
+            "news_by_competitor": {},
+            "news_by_developer": {},
+            "news_general": [],
+            "news_by_region": {},
+            "news_by_channel": {},
+            "daily_indicators": raw["daily_indicators"],
+            "parsed_indicators": raw["parsed_indicators"],
+            "regions": [],
+            "report_config": {},
+            "period": {"date_from": str(date_from), "date_to": str(date_to)},
+        }
+    else:
+        data = get_report_data_for_pdf(
+            db,
+            date_from=date_from,
+            date_to=date_to,
+            period_month=period_month_val,
+            include_news=report_cfg.get("include_news", True),
+            include_indicators=report_cfg.get("include_indicators", True),
+            include_regions=report_cfg.get("include_regions", True),
+        )
     data["report_config"] = generated["report_config"]
     data["processed_indicators"] = generated.get("processed_indicators")
     data["processed_news"] = generated.get("processed_news")
@@ -341,30 +378,39 @@ def publish_html(
         date_range_days=p.date_range_days,
         report_month=p.report_month,
     )
-    if p.skip_ai:
-        generated = _generated_from_processed_payload(
-            p, report_cfg=report_cfg, date_from=date_from, date_to=date_to
+    try:
+        if p.skip_ai:
+            generated = _generated_from_processed_payload(
+                p, report_cfg=report_cfg, date_from=date_from, date_to=date_to
+            )
+        else:
+            generated = None
+        data = _build_html_report_data(
+            db,
+            date_from=date_from,
+            date_to=date_to,
+            period_month_val=period_month_val,
+            report_cfg=report_cfg,
+            report_month=p.report_month,
+            generated=generated,
+            light=bool(p.skip_ai),
         )
-    else:
-        generated = None
-    data = _build_html_report_data(
-        db,
-        date_from=date_from,
-        date_to=date_to,
-        period_month_val=period_month_val,
-        report_cfg=report_cfg,
-        report_month=p.report_month,
-        generated=generated,
-    )
-    html = build_report_html(**data)
-    meta = save_published_html(
-        html,
-        title=report_cfg.get("title", "Аналитический отчёт"),
-        date_from=str(date_from),
-        date_to=str(date_to),
-        report_month=p.report_month,
-    )
-    return ReportPublishedOut(**meta)
+        html = build_report_html(**data)
+        meta = save_published_html(
+            html,
+            title=report_cfg.get("title", "Аналитический отчёт"),
+            date_from=str(date_from),
+            date_to=str(date_to),
+            report_month=p.report_month,
+        )
+        log.info(
+            "published html report",
+            extra={"report_id": meta.get("id"), "bytes": len(html.encode("utf-8")), "skip_ai": p.skip_ai},
+        )
+        return ReportPublishedOut(**meta)
+    except Exception as e:
+        log.exception("publish-html failed")
+        raise HTTPException(status_code=500, detail=f"Не удалось опубликовать HTML: {e}") from e
 
 
 @router.get("/published", response_model=ReportPublishedListOut)
