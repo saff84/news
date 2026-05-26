@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { FileUp, Pencil, Plus, Trash2 } from "lucide-react";
 import { LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, LabelList } from "recharts";
 import { api, type IndicatorHistoryOut, type IndicatorLatestOut, type ParsedIndicatorOut } from "../lib/api";
@@ -7,6 +7,47 @@ import { useToast } from "../state/toast";
 import { HintBox } from "../components/Field";
 
 type ParsedRow = { indicator_name: string; period: string; value: number; change_pct?: number | null; unit?: string | null };
+
+function roundTo(value: number, digits: number = 2): number {
+  const p = 10 ** digits;
+  return Math.round(value * p) / p;
+}
+
+function changeToneClass(delta: number): string {
+  if (delta > 0) return "bg-red-50 text-red-700";
+  if (delta < 0) return "bg-emerald-50 text-emerald-700";
+  return "bg-slate-100 text-slate-700";
+}
+
+function withAutoChangePct(rows: ParsedRow[]): ParsedRow[] {
+  const out = rows.map((r) => ({ ...r }));
+  const byIndicator = new Map<string, Array<{ idx: number; row: ParsedRow }>>();
+
+  out.forEach((row, idx) => {
+    const key = (row.indicator_name || "").trim().toLowerCase();
+    if (!byIndicator.has(key)) byIndicator.set(key, []);
+    byIndicator.get(key)!.push({ idx, row });
+  });
+
+  for (const entries of byIndicator.values()) {
+    entries.sort((a, b) => {
+      const ka = periodSortKey(a.row.period);
+      const kb = periodSortKey(b.row.period);
+      return ka - kb;
+    });
+    for (let i = 0; i < entries.length; i++) {
+      const cur = entries[i];
+      const prev = entries[i - 1];
+      if (!prev || !Number.isFinite(prev.row.value) || prev.row.value === 0) {
+        out[cur.idx].change_pct = null;
+        continue;
+      }
+      const deltaPct = ((cur.row.value - prev.row.value) / Math.abs(prev.row.value)) * 100;
+      out[cur.idx].change_pct = roundTo(deltaPct);
+    }
+  }
+  return out;
+}
 
 function periodSortKey(periodRaw: string): number {
   const src = (periodRaw || "").replace(/\u00a0/g, " ").trim();
@@ -123,7 +164,7 @@ function IndicatorChartCard({
             <div className="text-xs text-slate-500">{latest.period}</div>
           </div>
           {change !== null ? (
-            <div className={`rounded-lg px-3 py-1.5 text-sm font-medium tabular-nums ${change >= 0 ? "bg-emerald-50 text-emerald-700" : "bg-red-50 text-red-700"}`}>
+            <div className={`rounded-lg px-3 py-1.5 text-sm font-medium tabular-nums ${changeToneClass(change)}`}>
               {change >= 0 ? "+" : ""}
               {formatVal(change)}
             </div>
@@ -256,7 +297,7 @@ export function IndicatorsPage() {
     setParseError(null);
     try {
       const rows = await api.indicators.parseDocument(accessToken, file);
-      setParsedRows(rows);
+      setParsedRows(withAutoChangePct(rows));
       setImportOpen(true);
       setParseError(rows.length === 0 ? "В файле не найдено табличных данных." : null);
     } catch (err: any) {
@@ -388,13 +429,37 @@ export function IndicatorsPage() {
     setParsedRows((prev) => {
       const next = [...prev];
       next[idx] = { ...next[idx], [field]: value };
-      return next;
+      if (field === "change_pct") return next;
+      return withAutoChangePct(next);
     });
   };
 
   const removeParsedRow = (idx: number) => {
-    setParsedRows((prev) => prev.filter((_, i) => i !== idx));
+    setParsedRows((prev) => withAutoChangePct(prev.filter((_, i) => i !== idx)));
   };
+
+  const autoChangeById = useMemo(() => {
+    const map = new Map<string, number | null>();
+    const grouped = new Map<string, ParsedIndicatorOut[]>();
+    for (const r of parsedItems) {
+      const key = (r.indicator_name || "").trim().toLowerCase();
+      if (!grouped.has(key)) grouped.set(key, []);
+      grouped.get(key)!.push(r);
+    }
+    for (const rows of grouped.values()) {
+      const sorted = [...rows].sort((a, b) => periodSortKey(a.period) - periodSortKey(b.period));
+      for (let i = 0; i < sorted.length; i++) {
+        const cur = sorted[i];
+        const prev = sorted[i - 1];
+        if (!prev || !Number.isFinite(prev.value) || prev.value === 0) {
+          map.set(cur.id, null);
+          continue;
+        }
+        map.set(cur.id, roundTo(((cur.value - prev.value) / Math.abs(prev.value)) * 100));
+      }
+    }
+    return map;
+  }, [parsedItems]);
 
   return (
     <div>
@@ -488,7 +553,7 @@ export function IndicatorsPage() {
                   {cnyHistory.items.length >= 2 ? (
                     <div
                       className={`rounded-lg px-3 py-1.5 text-sm font-medium tabular-nums ${
-                        (cnyHistory.items[cnyHistory.items.length - 1]?.value ?? 0) - (cnyHistory.items[cnyHistory.items.length - 2]?.value ?? 0) >= 0 ? "bg-emerald-50 text-emerald-700" : "bg-red-50 text-red-700"
+                        changeToneClass((cnyHistory.items[cnyHistory.items.length - 1]?.value ?? 0) - (cnyHistory.items[cnyHistory.items.length - 2]?.value ?? 0))
                       }`}
                     >
                       {((cnyHistory.items[cnyHistory.items.length - 1]?.value ?? 0) - (cnyHistory.items[cnyHistory.items.length - 2]?.value ?? 0) >= 0 ? "+" : "")}
@@ -591,7 +656,7 @@ export function IndicatorsPage() {
                     <td className="px-4 py-2 font-medium">{r.indicator_name}</td>
                     <td className="px-4 py-2">{r.period}</td>
                     <td className="px-4 py-2 tabular-nums">{formatValue(r.value, r.unit)}</td>
-                    <td className="px-4 py-2 tabular-nums">{r.change_pct != null ? `${r.change_pct}%` : "—"}</td>
+                    <td className="px-4 py-2 tabular-nums">{(r.change_pct ?? autoChangeById.get(r.id) ?? null) != null ? `${(r.change_pct ?? autoChangeById.get(r.id) ?? null)}%` : "—"}</td>
                     <td className="px-4 py-2">{r.unit || "—"}</td>
                     <td className="px-4 py-2 text-slate-500">{r.source_name || "—"}</td>
                     {user?.role === "Admin" ? (
