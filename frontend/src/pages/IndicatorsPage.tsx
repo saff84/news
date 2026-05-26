@@ -703,8 +703,10 @@ export function IndicatorsPage() {
       {/* Import from file */}
       {user?.role === "Admin" ? (
         <div className="mt-4 rounded-lg border-2 border-slate-200 bg-slate-50 p-4">
-          <h2 className="text-base font-semibold text-slate-800">Импорт из PDF или скриншота</h2>
-          <p className="mt-1 text-sm text-slate-600">Загрузите PDF или изображение с таблицей показателей.</p>
+          <h2 className="text-base font-semibold text-slate-800">Импорт из файла</h2>
+          <p className="mt-1 text-sm text-slate-600">
+            Excel (.xlsx) — предпочтительно для таблиц (ключевая ставка ЦБ и др.). PDF и скриншоты распознаются через OCR; перед сохранением проверьте все строки.
+          </p>
           {parseError ? (
             <div className="mt-3 rounded border border-amber-200 bg-amber-50 p-2 text-sm text-amber-800">
               {parseError}
@@ -714,7 +716,7 @@ export function IndicatorsPage() {
             </div>
           ) : null}
           <label className="mt-3 inline-flex cursor-pointer items-center gap-2 rounded bg-slate-900 px-4 py-2 text-sm font-medium text-white hover:bg-slate-800 disabled:opacity-50">
-            <input type="file" accept=".pdf,.png,.jpg,.jpeg,.webp,.bmp" className="hidden" onChange={handleParseFile} disabled={parseLoading} />
+            <input type="file" accept=".pdf,.xlsx,.xlsm,.png,.jpg,.jpeg,.webp,.bmp" className="hidden" onChange={handleParseFile} disabled={parseLoading} />
             <FileUp className="h-4 w-4" />
             {parseLoading ? "Парсинг…" : "Выбрать файл"}
           </label>

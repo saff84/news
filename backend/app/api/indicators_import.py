@@ -13,7 +13,7 @@ from app.core.deps import require_role
 from app.db import get_db
 from app.models.auth import Role, User
 from app.models.domain import ParsedIndicator
-from app.parsers.table_extractor import extract_from_image, extract_from_pdf
+from app.parsers.table_extractor import extract_from_image, extract_from_pdf, extract_from_xlsx
 
 router = APIRouter(prefix="/indicators", tags=["indicators"])
 
@@ -248,7 +248,7 @@ def parse_document(
     user: User = Depends(require_role(Role.ADMIN)),
 ) -> list[dict]:
     """
-    Parse PDF or image (PNG, JPG) and extract table data.
+    Parse PDF, Excel (.xlsx), or image and extract table data.
     Returns editable rows for review before save.
     """
     content = file.file.read()
@@ -261,13 +261,21 @@ def parse_document(
             rows = extract_from_pdf(content)
         except Exception as e:
             raise HTTPException(status_code=400, detail=f"PDF parse error: {e}")
+    elif ext in ("xlsx", "xlsm"):
+        try:
+            rows = extract_from_xlsx(content)
+        except Exception as e:
+            raise HTTPException(status_code=400, detail=f"Excel parse error: {e}")
     elif ext in ("png", "jpg", "jpeg", "webp", "bmp"):
         try:
             rows = extract_from_image(content)
         except Exception as e:
             raise HTTPException(status_code=400, detail=f"Image OCR error: {e}. Ensure Tesseract is installed.")
     else:
-        raise HTTPException(status_code=400, detail="Supported: PDF, PNG, JPG, JPEG, WEBP, BMP")
+        raise HTTPException(
+            status_code=400,
+            detail="Supported: PDF, XLSX, PNG, JPG, JPEG, WEBP, BMP",
+        )
 
     return rows
 

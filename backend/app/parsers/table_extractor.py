@@ -1,14 +1,15 @@
-"""Extract structured table data from PDF and images (screenshots)."""
+"""Extract structured table data from PDF, images (screenshots), and Excel."""
 
 from __future__ import annotations
 
 import io
 import re
 from dataclasses import dataclass
+from datetime import date, datetime
 from typing import Any
 
 import pdfplumber
-from PIL import Image
+from PIL import Image, ImageEnhance, ImageFilter
 import pytesseract
 
 
@@ -73,8 +74,102 @@ _DATE_RANGE_RE = re.compile(
     r"(\d{1,2}\s+" + _RU_MONTHS + r"\s+\d{4}\s*г\.(?:\s*-\s*\d{1,2}\s+" + _RU_MONTHS + r"\s+\d{4}\s*г\.)?)",
     re.I,
 )
-# Number with comma decimal: 15,50 or 16,00 (prefer to avoid matching years like 2026)
-_NUMBER_RE = re.compile(r"\b(\d{1,3},\d{2})\b")
+# Rate / percent values: 15,50 | 16.00 | 7,5 (avoid 4-digit years)
+_RATE_VALUE_RE = re.compile(r"(?<!\d)(\d{1,2}[,.]\d{1,2}|\d{1,2})(?!\d)")
+
+_RU_MONTH_NAMES_GENITIVE = (
+    "января", "февраля", "марта", "апреля", "мая", "июня",
+    "июля", "августа", "сентября", "октября", "ноября", "декабря",
+)
+
+
+def _parse_rate_value(num_str: str) -> float | None:
+    s = (num_str or "").replace(",", ".").strip()
+    if not s:
+        return None
+    try:
+        val = float(s)
+    except ValueError:
+        return None
+    if 1900 <= val <= 2100 and val == int(val):
+        return None
+    if val < 0 or val > 100:
+        return None
+    return val
+
+
+def _rate_value_in_text(s: str) -> float | None:
+    for m in _RATE_VALUE_RE.finditer(s or ""):
+        val = _parse_rate_value(m.group(1))
+        if val is not None:
+            return val
+    return None
+
+
+def _dedupe_flat_rows(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    seen: set[tuple[str, str]] = set()
+    out: list[dict[str, Any]] = []
+    for r in rows:
+        key = (str(r.get("indicator_name") or ""), str(r.get("period") or ""))
+        if key in seen:
+            continue
+        seen.add(key)
+        out.append(r)
+    return out
+
+
+def _format_excel_period(cell: Any) -> str:
+    if cell is None:
+        return ""
+    if isinstance(cell, datetime):
+        d = cell.date()
+    elif isinstance(cell, date):
+        d = cell
+    else:
+        s = str(cell).strip()
+        return s
+    month = _RU_MONTH_NAMES_GENITIVE[d.month - 1]
+    return f"{d.day} {month} {d.year} г."
+
+
+def _cell_to_str(cell: Any) -> str:
+    if cell is None:
+        return ""
+    if isinstance(cell, (datetime, date)):
+        return _format_excel_period(cell)
+    if isinstance(cell, float) and cell > 30000:
+        try:
+            from openpyxl.utils.datetime import from_excel
+
+            return _format_excel_period(from_excel(cell))
+        except Exception:
+            pass
+    return str(cell).strip()
+
+
+def _extract_date_value_pairs_from_text(
+    text: str,
+    default_indicator: str = "Ключевая ставка",
+) -> list[dict[str, Any]]:
+    """
+    Find all date/range + rate pairs in text (handles OCR merging rows into one line).
+    """
+    flat: list[dict[str, Any]] = []
+    normalized = re.sub(r"\s+", " ", (text or "").replace("\n", " "))
+    for m in _DATE_RANGE_RE.finditer(normalized):
+        period = m.group(1).strip()
+        tail = normalized[m.end() : m.end() + 80]
+        value = _rate_value_in_text(tail)
+        if value is None:
+            continue
+        flat.append({
+            "indicator_name": default_indicator,
+            "period": period,
+            "value": value,
+            "change_pct": None,
+            "unit": "%",
+        })
+    return flat
 
 
 def _extract_date_value_table(text: str, default_indicator: str = "Ключевая ставка") -> list[dict[str, Any]]:
@@ -86,39 +181,18 @@ def _extract_date_value_table(text: str, default_indicator: str = "Ключев�
     lines = [l.strip() for l in text.splitlines() if l.strip()]
 
     for line in lines:
-        # Find number in line (e.g. 15,50)
-        num_match = _NUMBER_RE.search(line)
-        if not num_match:
+        dm = _DATE_RANGE_RE.search(line)
+        if not dm:
             continue
-        try:
-            value = float(num_match.group(1).replace(",", "."))
-        except ValueError:
+        period = dm.group(1).strip()
+        value = _rate_value_in_text(line[dm.end() :])
+        if value is None:
+            parts = re.split(r"\s{2,}|\t|\|", line)
+            if len(parts) >= 2:
+                value = _rate_value_in_text(parts[1])
+        if value is None:
             continue
-        # Period: text before the number, or first column if split by 2+ spaces
-        parts = re.split(r"\s{2,}|\t", line)
-        period = ""
-        if len(parts) >= 2:
-            # First part is usually period (date)
-            period = (parts[0] or "").strip()
-            # Check if period looks like a date
-            if _DATE_RANGE_RE.match(period):
-                pass
-            else:
-                # Maybe number is in first part - try to extract period before number
-                before_num = line[: num_match.start()].strip()
-                if _DATE_RANGE_RE.search(before_num):
-                    period = _DATE_RANGE_RE.search(before_num).group(1).strip()
-                else:
-                    period = before_num or parts[0]
-        else:
-            before_num = line[: num_match.start()].strip()
-            if _DATE_RANGE_RE.search(before_num):
-                period = _DATE_RANGE_RE.search(before_num).group(1).strip()
-            else:
-                period = before_num or "—"
 
-        if not period:
-            continue
         flat.append({
             "indicator_name": default_indicator,
             "period": period,
@@ -126,7 +200,9 @@ def _extract_date_value_table(text: str, default_indicator: str = "Ключев�
             "change_pct": None,
             "unit": "%",
         })
-    return flat
+
+    pairs = _extract_date_value_pairs_from_text(text, default_indicator=default_indicator)
+    return _dedupe_flat_rows(flat + pairs)
 
 
 def _extract_table_from_text(text: str, period_headers: list[str] | None = None) -> list[ParsedRow]:
@@ -212,14 +288,9 @@ def _extract_date_value_from_table_cells(table: list[list[str | None]]) -> list[
             if cell is None:
                 continue
             s = str(cell).strip()
-            num_match = _NUMBER_RE.search(s)
-            if num_match:
-                try:
-                    value = float(num_match.group(1).replace(",", "."))
-                except ValueError:
-                    pass
-                if value is not None:
-                    break
+            value = _rate_value_in_text(s)
+            if value is not None:
+                break
         if value is not None and period:
             flat.append({
                 "indicator_name": "Ключевая ставка",
@@ -362,26 +433,135 @@ def extract_from_pdf(file_bytes: bytes) -> list[dict[str, Any]]:
     return _extract_date_value_table(text)
 
 
+def _preprocess_for_ocr(img: Image.Image) -> Image.Image:
+    """Upscale small screenshots and improve contrast for Tesseract."""
+    if img.mode != "RGB":
+        img = img.convert("RGB")
+    w, h = img.size
+    if w < 1400:
+        scale = 1400 / max(w, 1)
+        img = img.resize((int(w * scale), int(h * scale)), Image.Resampling.LANCZOS)
+    gray = img.convert("L")
+    gray = ImageEnhance.Contrast(gray).enhance(1.4)
+    gray = gray.filter(ImageFilter.SHARPEN)
+    return gray
+
+
+def _ocr_collect_text(img: Image.Image) -> str:
+    """Run OCR with several page layouts; merge text for downstream parsers."""
+    pre = _preprocess_for_ocr(img)
+    chunks: list[str] = []
+    for psm in (6, 4, 11):
+        try:
+            chunks.append(
+                pytesseract.image_to_string(pre, lang="rus+eng", config=f"--psm {psm}")
+            )
+        except Exception:
+            pass
+    try:
+        data = pytesseract.image_to_data(pre, lang="rus+eng", output_type=pytesseract.Output.DICT)
+        by_line: dict[tuple[int, int], list[str]] = {}
+        for i, word in enumerate(data.get("text") or []):
+            w = (word or "").strip()
+            if not w:
+                continue
+            try:
+                conf = int(float(data["conf"][i]))
+            except (ValueError, TypeError):
+                conf = -1
+            if conf >= 0 and conf < 40:
+                continue
+            key = (int(data["block_num"][i]), int(data["line_num"][i]))
+            by_line.setdefault(key, []).append(w)
+        line_text = "\n".join(" ".join(words) for _, words in sorted(by_line.items()))
+        if line_text.strip():
+            chunks.append(line_text)
+    except Exception:
+        pass
+    return "\n".join(chunks)
+
+
+def _extract_key_rate_rows(text: str) -> list[dict[str, Any]]:
+    """CBR-style period + rate; combine line-based and global pair extraction."""
+    line_rows = _extract_date_value_table(text)
+    if len(line_rows) >= 2:
+        return line_rows
+    pairs = _extract_date_value_pairs_from_text(text)
+    merged = _dedupe_flat_rows(line_rows + pairs)
+    return merged if merged else line_rows
+
+
+def extract_from_xlsx(file_bytes: bytes) -> list[dict[str, Any]]:
+    """Extract tables from the first worksheet (.xlsx)."""
+    from openpyxl import load_workbook
+
+    wb = load_workbook(io.BytesIO(file_bytes), read_only=True, data_only=True)
+    try:
+        flat: list[dict[str, Any]] = []
+        for ws in wb.worksheets:
+            table: list[list[str]] = []
+            for row in ws.iter_rows(values_only=True):
+                if row is None or all(c is None or str(c).strip() == "" for c in row):
+                    continue
+                table.append([_cell_to_str(c) for c in row])
+            if len(table) < 2:
+                continue
+            date_val = _extract_date_value_from_table_cells(table)
+            if date_val:
+                flat.extend(date_val)
+                continue
+            matrix = _extract_matrix_table(table)
+            if matrix:
+                flat.extend(matrix)
+                continue
+            for data_row in table[1:]:
+                if not data_row:
+                    continue
+                period = (data_row[0] or "").strip()
+                if not _looks_like_date_period(period):
+                    continue
+                value = None
+                for cell in data_row[1:]:
+                    value = _rate_value_in_text(str(cell or ""))
+                    if value is not None:
+                        break
+                if value is not None:
+                    flat.append({
+                        "indicator_name": "Ключевая ставка",
+                        "period": period,
+                        "value": value,
+                        "change_pct": None,
+                        "unit": "%",
+                    })
+        return _dedupe_flat_rows(flat)
+    finally:
+        wb.close()
+
+
 def extract_from_image(file_bytes: bytes) -> list[dict[str, Any]]:
     """
     Extract text from image via OCR, then parse table heuristically.
     """
     img = Image.open(io.BytesIO(file_bytes))
-    if img.mode != "RGB":
-        img = img.convert("RGB")
-    text = pytesseract.image_to_string(img, lang="rus+eng")
-    # Try date-value format first (CBR key rate etc.)
-    date_val = _extract_date_value_table(text)
-    if date_val:
-        return date_val
+    text = _ocr_collect_text(img)
+
+    key_rate = _extract_key_rate_rows(text)
+    if key_rate:
+        return key_rate
+
     rows = _extract_table_from_text(text)
     nested = [
         {
             "indicator_name": r.indicator_name,
             "unit": r.unit,
-            "values": {k: {"value": v.value, "change_pct": v.change_pct, "raw": v.raw} for k, v in r.values.items() if v.value is not None},
+            "values": {
+                k: {"value": v.value, "change_pct": v.change_pct, "raw": v.raw}
+                for k, v in r.values.items()
+                if v.value is not None
+            },
             "level": r.level,
         }
         for r in rows
     ]
-    return _to_flat_rows(nested)
+    flat = _to_flat_rows(nested)
+    return flat if flat else key_rate
