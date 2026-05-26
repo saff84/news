@@ -38,6 +38,9 @@ _AI_LINK_INSTRUCTION = (
     "[краткий текст](URL) ровно с тем URL, который указан во входных данных. Не выдумывай ссылки."
 )
 
+# Максимум новостей за период в отчёте (самые свежие по published_at).
+MAX_NEWS_ITEMS_PER_REPORT = 2000
+
 
 def _serialize_news_for_ai(
     items: list,
@@ -204,7 +207,7 @@ def fetch_report_data(
             )
         news_items = (
             q.order_by(NewsItem.published_at.desc().nullslast())
-            .limit(500)
+            .limit(MAX_NEWS_ITEMS_PER_REPORT)
             .all()
         )
 
