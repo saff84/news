@@ -214,8 +214,8 @@ services:
       context: ./frontend
       dockerfile: Dockerfile.nginx
       args:
-        # Use same-origin API via nginx proxy on /api.
-        VITE_API_BASE_URL: "${API_PUBLIC_URL:-/api}"
+        # Пусто = same-origin /api/… через nginx. Не задавайте /api — пути уже с префиксом /api.
+        VITE_API_BASE_URL: "${API_PUBLIC_URL:-}"
     ports:
       - "80:80"
     depends_on:

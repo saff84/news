@@ -1,4 +1,17 @@
-const API_BASE = import.meta.env.VITE_API_BASE_URL || "http://localhost:8000";
+/** Собирает URL запроса: same-origin /api/… или http://localhost:8000 в dev. */
+export function resolveApiUrl(path: string): string {
+  const raw = import.meta.env.VITE_API_BASE_URL;
+  const hasBase = raw !== undefined && raw !== null && String(raw).trim() !== "";
+  if (!hasBase) {
+    return path;
+  }
+  const base = String(raw).replace(/\/$/, "");
+  // docker-compose раньше задавал VITE_API_BASE_URL=/api при путях /api/… → /api/api/…
+  if ((base === "/api" || base.endsWith("/api")) && path.startsWith("/api/")) {
+    return path;
+  }
+  return `${base}${path}`;
+}
 
 export type TokenPair = {
   access_token: string;
@@ -237,7 +250,18 @@ async function request<T>(path: string, init: RequestInit = {}, accessToken?: st
   };
   if (accessToken) headers.Authorization = `Bearer ${accessToken}`;
 
-  const res = await fetch(`${API_BASE}${path}`, { ...init, headers });
+  let res: Response;
+  try {
+    res = await fetch(resolveApiUrl(path), { ...init, headers });
+  } catch (e: unknown) {
+    const msg = e instanceof Error ? e.message : "Network error";
+    if (msg === "Failed to fetch" || msg.includes("NetworkError")) {
+      throw new Error(
+        "Нет связи с API. Проверьте backend, nginx (/api) и миграцию: docker compose exec backend alembic upgrade head",
+      );
+    }
+    throw e instanceof Error ? e : new Error(msg);
+  }
   if (!res.ok) {
     // On 401 with expired token: try refresh and retry once
     if (res.status === 401 && accessToken && authRefreshHandler && !isRetry) {
@@ -507,7 +531,7 @@ export const api = {
     parseDocument: (async function parseDoc(accessToken: string, file: File, isRetry = false) {
       const form = new FormData();
       form.append("file", file);
-      const res = await fetch(`${API_BASE}/api/indicators/parse-document`, {
+      const res = await fetch(resolveApiUrl("/api/indicators/parse-document"), {
         method: "POST",
         headers: { Authorization: `Bearer ${accessToken}` },
         body: form,
@@ -749,7 +773,7 @@ export const api = {
         processed_regions_by_name_json?: Record<string, Record<string, unknown>>;
       },
     ): Promise<Blob> => {
-      const res = await fetch(`${API_BASE}/api/reports/generate-pdf`, {
+      const res = await fetch(resolveApiUrl("/api/reports/generate-pdf"), {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
@@ -767,7 +791,7 @@ export const api = {
       accessToken: string,
       params?: { date_from?: string; date_to?: string; date_range_days?: number; report_month?: string },
     ): Promise<Blob> => {
-      const res = await fetch(`${API_BASE}/api/reports/generate-html`, {
+      const res = await fetch(resolveApiUrl("/api/reports/generate-html"), {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
@@ -834,7 +858,7 @@ export const api = {
       onEvent: (event: Record<string, unknown>) => void,
       signal?: AbortSignal,
     ) => {
-      const res = await fetch(`${API_BASE}/api/reports/generate-stream`, {
+      const res = await fetch(resolveApiUrl("/api/reports/generate-stream"), {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
