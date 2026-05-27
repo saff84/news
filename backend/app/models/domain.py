@@ -157,8 +157,9 @@ class TgChannelState(Base, UUIDPrimaryKeyMixin):
 
     source_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("sources.id", ondelete="CASCADE"), unique=True)
     channel_username: Mapped[str] = mapped_column(String(128), nullable=False)
-    channel_id: Mapped[int | None] = mapped_column(Integer)
-    last_message_id: Mapped[int | None] = mapped_column(Integer)
+    # Telegram channel/message ids exceed 32-bit signed int (e.g. 2272593110).
+    channel_id: Mapped[int | None] = mapped_column(BigInteger)
+    last_message_id: Mapped[int | None] = mapped_column(BigInteger)
     last_fetch_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     last_success_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     last_error: Mapped[str | None] = mapped_column(Text)
