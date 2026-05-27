@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from typing import Any
+from uuid import UUID
 
 from fastapi import APIRouter, Depends
 
@@ -25,6 +26,14 @@ class ReportConfigOut(BaseModel):
     include_news: bool
     include_indicators: bool
     include_regions: bool
+    include_competitors: bool
+    include_developers: bool
+    include_general_news: bool
+    include_clusters: bool
+    include_region_unassigned: bool
+    disabled_competitor_ids: list[str]
+    disabled_developer_ids: list[str]
+    disabled_region_ids: list[str]
     date_range_days: int
     report_month: str | None  # "YYYY-MM" — отчёт за месяц (приоритет над date_range_days)
 
@@ -38,6 +47,14 @@ class ReportConfigUpdateIn(BaseModel):
     include_news: bool | None = None
     include_indicators: bool | None = None
     include_regions: bool | None = None
+    include_competitors: bool | None = None
+    include_developers: bool | None = None
+    include_general_news: bool | None = None
+    include_clusters: bool | None = None
+    include_region_unassigned: bool | None = None
+    disabled_competitor_ids: list[UUID] | None = None
+    disabled_developer_ids: list[UUID] | None = None
+    disabled_region_ids: list[UUID] | None = None
     date_range_days: int | None = Field(default=None, ge=1, le=365)
     report_month: str | None = Field(default=None, pattern=r"^(\d{4}-\d{2})?$")  # "2026-01" or empty
 
@@ -57,11 +74,22 @@ def _to_out(cfg: dict[str, Any]) -> ReportConfigOut:
         "include_news": True,
         "include_indicators": True,
         "include_regions": True,
+        "include_competitors": True,
+        "include_developers": True,
+        "include_general_news": True,
+        "include_clusters": True,
+        "include_region_unassigned": True,
+        "disabled_competitor_ids": [],
+        "disabled_developer_ids": [],
+        "disabled_region_ids": [],
         "date_range_days": 30,
         "report_month": None,
     }
     merged = {**defaults, **cfg}
-    return ReportConfigOut(**{k: merged.get(k, v) for k, v in defaults.items()})
+    out = {k: merged.get(k, v) for k, v in defaults.items()}
+    for key in ("disabled_competitor_ids", "disabled_developer_ids", "disabled_region_ids"):
+        out[key] = [str(x) for x in (out.get(key) or [])]
+    return ReportConfigOut(**out)
 
 
 @router.get("", response_model=ReportConfigOut)
@@ -81,7 +109,7 @@ def update_config(
     user: User = Depends(require_role(Role.ADMIN)),
 ) -> ReportConfigOut:
     """Update report config (Admin only)."""
-    kwargs = payload.model_dump(exclude_unset=True)
+    kwargs = payload.model_dump(exclude_unset=True, mode="json")
     save_report_config(db, **kwargs)
     cfg = get_report_config(db)
     return _to_out(cfg)

@@ -45,6 +45,14 @@ def _default_config() -> dict[str, Any]:
         "include_news": True,
         "include_indicators": True,
         "include_regions": True,
+        "include_competitors": True,
+        "include_developers": True,
+        "include_general_news": True,
+        "include_clusters": True,
+        "include_region_unassigned": True,
+        "disabled_competitor_ids": [],
+        "disabled_developer_ids": [],
+        "disabled_region_ids": [],
         "date_range_days": 30,
         "report_month": None,  # "YYYY-MM" — отчёт за месяц; приоритет над date_range_days
     }

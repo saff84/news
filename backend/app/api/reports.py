@@ -20,6 +20,7 @@ from app.models.auth import Role, User
 from app.services.report_html_builder import build_report_html
 from app.services.pdf_builder import build_report_pdf
 from app.services.report_config import get_report_config
+from app.services.report_section_settings import apply_section_filters_to_generated, parse_report_section_settings
 from app.services.report_generator import (
     _parse_report_month,
     fetch_report_data,
@@ -140,6 +141,7 @@ def _build_html_report_data(
     light=True — после ИИ (skip_ai): только индикаторы + готовые processed_*,
     без повторной загрузки тысяч новостей из БД (быстрее, меньше риска OOM/таймаута).
     """
+    section_settings = parse_report_section_settings(report_cfg)
     if generated is None:
         generated = generate_report(
             db,
@@ -147,6 +149,7 @@ def _build_html_report_data(
             date_to=date_to,
             report_month=report_month,
         )
+    generated = apply_section_filters_to_generated(db, generated, section_settings)
     if light:
         raw = fetch_report_data(
             db,
@@ -179,6 +182,7 @@ def _build_html_report_data(
             include_news=report_cfg.get("include_news", True),
             include_indicators=report_cfg.get("include_indicators", True),
             include_regions=report_cfg.get("include_regions", True),
+            section_settings=section_settings,
         )
     data["report_config"] = generated["report_config"]
     data["processed_indicators"] = generated.get("processed_indicators")
@@ -283,6 +287,7 @@ def generate_pdf(
         date_to = date_to or date.today()
         date_from = date_from or (date_to - timedelta(days=days))
 
+    section_settings = parse_report_section_settings(report_cfg)
     data = get_report_data_for_pdf(
         db,
         date_from=date_from,
@@ -291,6 +296,7 @@ def generate_pdf(
         include_news=report_cfg.get("include_news", True),
         include_indicators=report_cfg.get("include_indicators", True),
         include_regions=report_cfg.get("include_regions", True),
+        section_settings=section_settings,
     )
     data["report_config"] = {
         "title": report_cfg.get("title", "Аналитический отчёт"),
@@ -299,20 +305,38 @@ def generate_pdf(
         "company_address": report_cfg.get("company_address", ""),
         "footer_text": report_cfg.get("footer_text", ""),
     }
-    data["processed_indicators"] = p.processed_indicators
-    data["processed_news"] = p.processed_news
+    filtered = apply_section_filters_to_generated(
+        db,
+        {
+            "processed_indicators": p.processed_indicators,
+            "processed_news": p.processed_news,
+            "processed_clusters": p.processed_clusters,
+            "processed_news_json": p.processed_news_json,
+            "processed_indicators_json": p.processed_indicators_json,
+            "processed_clusters_json": p.processed_clusters_json,
+            "processed_competitors_by_name": p.processed_competitors_by_name or {},
+            "processed_developers_by_name": p.processed_developers_by_name or {},
+            "processed_regions_by_name": p.processed_regions_by_name or {},
+            "processed_competitors_by_name_json": p.processed_competitors_by_name_json or {},
+            "processed_developers_by_name_json": p.processed_developers_by_name_json or {},
+            "processed_regions_by_name_json": p.processed_regions_by_name_json or {},
+        },
+        section_settings,
+    )
+    data["processed_indicators"] = filtered.get("processed_indicators")
+    data["processed_news"] = filtered.get("processed_news")
     data["processed_competitors"] = p.processed_competitors
     data["processed_regions"] = p.processed_regions
-    data["processed_clusters"] = p.processed_clusters
-    data["processed_news_json"] = p.processed_news_json
-    data["processed_indicators_json"] = p.processed_indicators_json
-    data["processed_clusters_json"] = p.processed_clusters_json
-    data["processed_competitors_by_name"] = p.processed_competitors_by_name or {}
-    data["processed_developers_by_name"] = p.processed_developers_by_name or {}
-    data["processed_regions_by_name"] = p.processed_regions_by_name or {}
-    data["processed_competitors_by_name_json"] = p.processed_competitors_by_name_json or {}
-    data["processed_developers_by_name_json"] = p.processed_developers_by_name_json or {}
-    data["processed_regions_by_name_json"] = p.processed_regions_by_name_json or {}
+    data["processed_clusters"] = filtered.get("processed_clusters")
+    data["processed_news_json"] = filtered.get("processed_news_json")
+    data["processed_indicators_json"] = filtered.get("processed_indicators_json")
+    data["processed_clusters_json"] = filtered.get("processed_clusters_json")
+    data["processed_competitors_by_name"] = filtered.get("processed_competitors_by_name") or {}
+    data["processed_developers_by_name"] = filtered.get("processed_developers_by_name") or {}
+    data["processed_regions_by_name"] = filtered.get("processed_regions_by_name") or {}
+    data["processed_competitors_by_name_json"] = filtered.get("processed_competitors_by_name_json") or {}
+    data["processed_developers_by_name_json"] = filtered.get("processed_developers_by_name_json") or {}
+    data["processed_regions_by_name_json"] = filtered.get("processed_regions_by_name_json") or {}
 
     pdf_bytes = build_report_pdf(**data)
     period = data["period"]

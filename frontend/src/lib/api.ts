@@ -615,6 +615,14 @@ export const api = {
         include_news: boolean;
         include_indicators: boolean;
         include_regions: boolean;
+        include_competitors: boolean;
+        include_developers: boolean;
+        include_general_news: boolean;
+        include_clusters: boolean;
+        include_region_unassigned: boolean;
+        disabled_competitor_ids: string[];
+        disabled_developer_ids: string[];
+        disabled_region_ids: string[];
         date_range_days: number;
         report_month: string | null;
       }>("/api/report-config", { method: "GET" }, accessToken),
@@ -629,6 +637,14 @@ export const api = {
         include_news: boolean;
         include_indicators: boolean;
         include_regions: boolean;
+        include_competitors: boolean;
+        include_developers: boolean;
+        include_general_news: boolean;
+        include_clusters: boolean;
+        include_region_unassigned: boolean;
+        disabled_competitor_ids: string[];
+        disabled_developer_ids: string[];
+        disabled_region_ids: string[];
         date_range_days: number;
         report_month: string | null;
       }>,
@@ -642,6 +658,14 @@ export const api = {
         include_news: boolean;
         include_indicators: boolean;
         include_regions: boolean;
+        include_competitors: boolean;
+        include_developers: boolean;
+        include_general_news: boolean;
+        include_clusters: boolean;
+        include_region_unassigned: boolean;
+        disabled_competitor_ids: string[];
+        disabled_developer_ids: string[];
+        disabled_region_ids: string[];
         date_range_days: number;
         report_month: string | null;
       }>("/api/report-config", { method: "PUT", body: JSON.stringify(payload) }, accessToken),

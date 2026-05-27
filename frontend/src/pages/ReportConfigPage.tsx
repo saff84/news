@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { ArrowDownLeft, ArrowUpRight, CheckCircle2, FileText, Loader2, Save, Trash2, XCircle } from "lucide-react";
-import { api } from "../lib/api";
+import { api, type CompetitorOut, type DeveloperOut, type RegionOut } from "../lib/api";
 import { useAuth } from "../state/auth";
 import { useToast } from "../state/toast";
 import { HintBox } from "../components/Field";
@@ -14,9 +14,88 @@ type ReportConfig = {
   include_news: boolean;
   include_indicators: boolean;
   include_regions: boolean;
+  include_competitors: boolean;
+  include_developers: boolean;
+  include_general_news: boolean;
+  include_clusters: boolean;
+  include_region_unassigned: boolean;
+  disabled_competitor_ids: string[];
+  disabled_developer_ids: string[];
+  disabled_region_ids: string[];
   date_range_days: number;
   report_month: string | null;
 };
+
+function toggleId(list: string[], id: string, included: boolean): string[] {
+  const s = new Set(list);
+  if (included) s.delete(id);
+  else s.add(id);
+  return [...s];
+}
+
+function EntityCheckList({
+  title,
+  hint,
+  entities,
+  disabledIds,
+  masterEnabled,
+  isAdmin,
+  onToggle,
+  onSelectAll,
+  onSelectNone,
+}: {
+  title: string;
+  hint: string;
+  entities: Array<{ id: string; name: string }>;
+  disabledIds: string[];
+  masterEnabled: boolean;
+  isAdmin: boolean;
+  onToggle: (id: string, included: boolean) => void;
+  onSelectAll: () => void;
+  onSelectNone: () => void;
+}) {
+  if (!masterEnabled || !entities.length) return null;
+  const disabled = new Set(disabledIds);
+  return (
+    <div className="mt-3 rounded border border-slate-200 bg-slate-50 p-3">
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <div>
+          <div className="text-sm font-medium text-slate-800">{title}</div>
+          <p className="text-xs text-slate-500">{hint}</p>
+        </div>
+        {isAdmin ? (
+          <div className="flex gap-2 text-xs">
+            <button type="button" className="text-sky-700 underline" onClick={onSelectAll}>
+              Все
+            </button>
+            <button type="button" className="text-sky-700 underline" onClick={onSelectNone}>
+              Ни одного
+            </button>
+          </div>
+        ) : null}
+      </div>
+      <ul className="mt-2 max-h-48 space-y-1 overflow-y-auto">
+        {entities.map((e) => {
+          const included = !disabled.has(e.id);
+          return (
+            <li key={e.id}>
+              <label className="flex cursor-pointer items-center gap-2 text-sm">
+                <input
+                  type="checkbox"
+                  className="rounded border-slate-300"
+                  checked={included}
+                  disabled={!isAdmin}
+                  onChange={(ev) => onToggle(e.id, ev.target.checked)}
+                />
+                <span className={included ? "text-slate-800" : "text-slate-400 line-through"}>{e.name}</span>
+              </label>
+            </li>
+          );
+        })}
+      </ul>
+    </div>
+  );
+}
 
 type GeneratedReport = {
   report_config: { title: string; subtitle: string; company_name: string; company_address: string; footer_text: string };
@@ -207,9 +286,20 @@ export function ReportConfigPage() {
     include_news: true,
     include_indicators: true,
     include_regions: true,
+    include_competitors: true,
+    include_developers: true,
+    include_general_news: true,
+    include_clusters: true,
+    include_region_unassigned: true,
+    disabled_competitor_ids: [],
+    disabled_developer_ids: [],
+    disabled_region_ids: [],
     date_range_days: 30,
     report_month: null,
   });
+  const [competitors, setCompetitors] = useState<CompetitorOut[]>([]);
+  const [developers, setDevelopers] = useState<DeveloperOut[]>([]);
+  const [regions, setRegions] = useState<RegionOut[]>([]);
   const [saveBusy, setSaveBusy] = useState(false);
   const [saveSuccess, setSaveSuccess] = useState(false);
   const [pdfBusy, setPdfBusy] = useState(false);
@@ -244,8 +334,16 @@ export function ReportConfigPage() {
     setLoading(true);
     setError(null);
     try {
-      const c = await api.reportConfig.get(accessToken);
+      const [c, comp, dev, reg] = await Promise.all([
+        api.reportConfig.get(accessToken),
+        api.competitors.list(accessToken),
+        api.developers.list(accessToken),
+        api.regions.list(accessToken),
+      ]);
       setConfig(c);
+      setCompetitors(comp.items.filter((x) => x.is_active !== false));
+      setDevelopers(dev.items.filter((x) => x.is_active !== false));
+      setRegions(reg.items.filter((x) => x.is_active !== false));
       setForm({
         title: c.title,
         subtitle: c.subtitle,
@@ -255,6 +353,14 @@ export function ReportConfigPage() {
         include_news: c.include_news,
         include_indicators: c.include_indicators,
         include_regions: c.include_regions,
+        include_competitors: c.include_competitors ?? true,
+        include_developers: c.include_developers ?? true,
+        include_general_news: c.include_general_news ?? true,
+        include_clusters: c.include_clusters ?? true,
+        include_region_unassigned: c.include_region_unassigned ?? true,
+        disabled_competitor_ids: c.disabled_competitor_ids ?? [],
+        disabled_developer_ids: c.disabled_developer_ids ?? [],
+        disabled_region_ids: c.disabled_region_ids ?? [],
         date_range_days: c.date_range_days,
         report_month: c.report_month ?? null,
       });
@@ -408,7 +514,9 @@ export function ReportConfigPage() {
         </label>
 
         <h2 className="mt-6 text-sm font-semibold">Разделы отчёта</h2>
-        <p className="mt-1 text-xs text-slate-600">Какие блоки включать в PDF.</p>
+        <p className="mt-1 text-xs text-slate-600">
+          Управляет запросами к ИИ, публикацией HTML и PDF. Снимите галочку с сущности — её блок не попадёт в отчёт.
+        </p>
         <div className="mt-3 flex flex-wrap gap-4">
           <label className="flex items-center gap-2">
             <input
@@ -418,7 +526,7 @@ export function ReportConfigPage() {
               disabled={!isAdmin}
               className="rounded border-slate-300"
             />
-            <span className="text-sm">Новости</span>
+            <span className="text-sm">Новости (в целом)</span>
           </label>
           <label className="flex items-center gap-2">
             <input
@@ -441,6 +549,112 @@ export function ReportConfigPage() {
             <span className="text-sm">Регионы</span>
           </label>
         </div>
+
+        {form.include_news ? (
+          <div className="mt-4 rounded border border-sky-100 bg-sky-50/50 p-3">
+            <p className="text-xs font-medium text-sky-900">Подразделы новостей (ИИ + HTML/PDF)</p>
+            <div className="mt-2 flex flex-wrap gap-4">
+              <label className="flex items-center gap-2">
+                <input
+                  type="checkbox"
+                  checked={form.include_competitors}
+                  onChange={(e) => setForm((f) => ({ ...f, include_competitors: e.target.checked }))}
+                  disabled={!isAdmin}
+                  className="rounded border-slate-300"
+                />
+                <span className="text-sm">Конкуренты</span>
+              </label>
+              <label className="flex items-center gap-2">
+                <input
+                  type="checkbox"
+                  checked={form.include_developers}
+                  onChange={(e) => setForm((f) => ({ ...f, include_developers: e.target.checked }))}
+                  disabled={!isAdmin}
+                  className="rounded border-slate-300"
+                />
+                <span className="text-sm">Застройщики</span>
+              </label>
+              <label className="flex items-center gap-2">
+                <input
+                  type="checkbox"
+                  checked={form.include_general_news}
+                  onChange={(e) => setForm((f) => ({ ...f, include_general_news: e.target.checked }))}
+                  disabled={!isAdmin}
+                  className="rounded border-slate-300"
+                />
+                <span className="text-sm">Общие новости</span>
+              </label>
+              <label className="flex items-center gap-2">
+                <input
+                  type="checkbox"
+                  checked={form.include_clusters}
+                  onChange={(e) => setForm((f) => ({ ...f, include_clusters: e.target.checked }))}
+                  disabled={!isAdmin}
+                  className="rounded border-slate-300"
+                />
+                <span className="text-sm">Кластеры</span>
+              </label>
+            </div>
+            <EntityCheckList
+              title="Конкуренты в отчёте"
+              hint="Снятая галочка — без саммари ИИ и без блока в HTML/PDF"
+              entities={competitors.map((c) => ({ id: c.id, name: c.name }))}
+              disabledIds={form.disabled_competitor_ids}
+              masterEnabled={form.include_competitors}
+              isAdmin={isAdmin}
+              onToggle={(id, included) =>
+                setForm((f) => ({ ...f, disabled_competitor_ids: toggleId(f.disabled_competitor_ids, id, included) }))
+              }
+              onSelectAll={() => setForm((f) => ({ ...f, disabled_competitor_ids: [] }))}
+              onSelectNone={() =>
+                setForm((f) => ({ ...f, disabled_competitor_ids: competitors.map((c) => c.id) }))
+              }
+            />
+            <EntityCheckList
+              title="Застройщики в отчёте"
+              hint="Снятая галочка — раздел скрыт"
+              entities={developers.map((d) => ({ id: d.id, name: d.name }))}
+              disabledIds={form.disabled_developer_ids}
+              masterEnabled={form.include_developers}
+              isAdmin={isAdmin}
+              onToggle={(id, included) =>
+                setForm((f) => ({ ...f, disabled_developer_ids: toggleId(f.disabled_developer_ids, id, included) }))
+              }
+              onSelectAll={() => setForm((f) => ({ ...f, disabled_developer_ids: [] }))}
+              onSelectNone={() =>
+                setForm((f) => ({ ...f, disabled_developer_ids: developers.map((d) => d.id) }))
+              }
+            />
+          </div>
+        ) : null}
+
+        {form.include_regions ? (
+          <div className="mt-4 rounded border border-violet-100 bg-violet-50/40 p-3">
+            <label className="mb-2 flex items-center gap-2">
+              <input
+                type="checkbox"
+                checked={form.include_region_unassigned}
+                onChange={(e) => setForm((f) => ({ ...f, include_region_unassigned: e.target.checked }))}
+                disabled={!isAdmin}
+                className="rounded border-slate-300"
+              />
+              <span className="text-sm">Включать «Без региона»</span>
+            </label>
+            <EntityCheckList
+              title="Регионы в отчёте"
+              hint="Отключённые регионы не отправляются в ИИ"
+              entities={regions.map((r) => ({ id: r.id, name: r.name }))}
+              disabledIds={form.disabled_region_ids}
+              masterEnabled
+              isAdmin={isAdmin}
+              onToggle={(id, included) =>
+                setForm((f) => ({ ...f, disabled_region_ids: toggleId(f.disabled_region_ids, id, included) }))
+              }
+              onSelectAll={() => setForm((f) => ({ ...f, disabled_region_ids: [] }))}
+              onSelectNone={() => setForm((f) => ({ ...f, disabled_region_ids: regions.map((r) => r.id) }))}
+            />
+          </div>
+        ) : null}
         <label className="mt-3 block">
           <span className="text-sm text-slate-700">Месяц отчёта (YYYY-MM)</span>
           <input

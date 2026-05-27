@@ -33,6 +33,14 @@ from app.services.ai_runtime import (
 )
 from app.services.report_config import get_report_config
 from app.services.report_section_render import parse_report_section_json, section_dict_to_markdown
+from app.services.report_section_settings import (
+    REGION_UNASSIGNED_LABEL,
+    ReportSectionSettings,
+    filter_competitor_groups,
+    filter_developer_groups,
+    filter_region_groups,
+    parse_report_section_settings,
+)
 
 
 _AI_LINK_INSTRUCTION = (
@@ -189,26 +197,38 @@ def _is_competitor_news(n: NewsItem, source_comp_map: dict[uuid.UUID, uuid.UUID]
     return bool(n.competitor_mentions and len(n.competitor_mentions) > 0)
 
 
-def _developers_with_enabled_sources(db: Session) -> dict[str, list]:
+def _developers_with_enabled_sources(db: Session, settings: ReportSectionSettings) -> dict[str, list]:
+    if not settings.include_developers:
+        return {}
     rows = (
-        db.query(Developer.name)
+        db.query(Developer.id, Developer.name)
         .join(Source, Source.developer_id == Developer.id)
         .filter(Source.enabled.is_(True), Developer.is_active.is_(True))
         .distinct()
         .all()
     )
-    return {r.name: [] for r in rows}
+    return {
+        r.name: []
+        for r in rows
+        if str(r.id) not in settings.disabled_developer_ids
+    }
 
 
-def _competitors_with_enabled_sources(db: Session) -> dict[str, list]:
+def _competitors_with_enabled_sources(db: Session, settings: ReportSectionSettings) -> dict[str, list]:
+    if not settings.include_competitors:
+        return {}
     rows = (
-        db.query(Competitor.name)
+        db.query(Competitor.id, Competitor.name)
         .join(Source, Source.competitor_id == Competitor.id)
         .filter(Source.enabled.is_(True), Competitor.is_active.is_(True))
         .distinct()
         .all()
     )
-    return {r.name: [] for r in rows}
+    return {
+        r.name: []
+        for r in rows
+        if str(r.id) not in settings.disabled_competitor_ids
+    }
 
 
 def _group_competitor_news(news: list, competitors_map: dict[str, str]) -> dict[str, list]:
@@ -334,6 +354,7 @@ def get_report_data_for_pdf(
     include_news: bool = True,
     include_indicators: bool = True,
     include_regions: bool = True,
+    section_settings: ReportSectionSettings | None = None,
 ) -> dict[str, Any]:
     """
     Fetch raw data for PDF with resolved names (source, region).
@@ -394,30 +415,56 @@ def get_report_data_for_pdf(
         developers_map,
         source_dev_map,
     )
-    for name, empty in _competitors_with_enabled_sources(db).items():
+    settings = section_settings or parse_report_section_settings({})
+    if not include_news:
+        settings = ReportSectionSettings(
+            include_news=False,
+            include_indicators=settings.include_indicators,
+            include_regions=False,
+            include_competitors=False,
+            include_developers=False,
+            include_general_news=False,
+            include_clusters=False,
+            include_region_unassigned=False,
+            disabled_competitor_ids=settings.disabled_competitor_ids,
+            disabled_developer_ids=settings.disabled_developer_ids,
+            disabled_region_ids=settings.disabled_region_ids,
+        )
+
+    for name, empty in _competitors_with_enabled_sources(db, settings).items():
         news_by_competitor.setdefault(name, empty)
-    for name, empty in _developers_with_enabled_sources(db).items():
+    for name, empty in _developers_with_enabled_sources(db, settings).items():
         news_by_developer.setdefault(name, empty)
 
+    news_by_competitor = filter_competitor_groups(news_by_competitor, competitors_map, settings)
+    news_by_developer = filter_developer_groups(news_by_developer, developers_map, settings)
+
     news_general: list = []
-    for n in news:
-        if not _is_competitor_news(n, source_comp_map) and not _is_developer_news(n, source_dev_map):
-            news_general.append(n)
+    if settings.include_general_news:
+        for n in news:
+            if not _is_competitor_news(n, source_comp_map) and not _is_developer_news(n, source_dev_map):
+                news_general.append(n)
 
     # Group news by region
     news_by_region: dict[str, list] = {}
-    for r in regions_list:
-        news_by_region[r.name] = []
-    news_by_region["Без региона"] = []
-    for n in news:
-        if n.region_ids:
-            for rid in n.region_ids:
-                rname = region_map.get(str(rid), str(rid))
-                if rname not in news_by_region:
-                    news_by_region[rname] = []
-                news_by_region[rname].append(n)
-        else:
-            news_by_region["Без региона"].append(n)
+    if settings.include_regions:
+        for r in regions_list:
+            if str(r.id) not in settings.disabled_region_ids:
+                news_by_region[r.name] = []
+        if settings.include_region_unassigned:
+            news_by_region[REGION_UNASSIGNED_LABEL] = []
+        for n in news:
+            if n.region_ids:
+                for rid in n.region_ids:
+                    rid_s = str(rid)
+                    if rid_s in settings.disabled_region_ids:
+                        continue
+                    rname = region_map.get(rid_s, rid_s)
+                    if rname not in news_by_region:
+                        news_by_region[rname] = []
+                    news_by_region[rname].append(n)
+            elif settings.include_region_unassigned:
+                news_by_region[REGION_UNASSIGNED_LABEL].append(n)
 
     # Group news by channel (source)
     news_by_channel: dict[str, list] = {}
@@ -542,6 +589,7 @@ def generate_report(
     report_month ("YYYY-MM") — приоритет: строго данные за месяц, без смешения с другими месяцами.
     """
     report_cfg = get_report_config(db)
+    section_settings = parse_report_section_settings(report_cfg)
     period_month_val: date | None = None
 
     if report_month is None:
@@ -709,30 +757,35 @@ def generate_report(
         region_map[str(r.id)] = r.name
     competitor_groups = _group_competitor_news(competitor_news, competitor_names_map)
     developer_groups = _group_developer_news(developer_news, developer_names_map, source_dev_map)
-    for name, empty in _competitors_with_enabled_sources(db).items():
+    for name, empty in _competitors_with_enabled_sources(db, section_settings).items():
         competitor_groups.setdefault(name, empty)
-    for name, empty in _developers_with_enabled_sources(db).items():
+    for name, empty in _developers_with_enabled_sources(db, section_settings).items():
         developer_groups.setdefault(name, empty)
-    region_groups = _group_region_news(all_news, region_map)
+    competitor_groups = filter_competitor_groups(competitor_groups, competitor_names_map, section_settings)
+    developer_groups = filter_developer_groups(developer_groups, developer_names_map, section_settings)
+    region_groups = filter_region_groups(_group_region_news(all_news, region_map), region_map, section_settings)
+
+    if not section_settings.include_general_news:
+        general_news = []
 
     plan_steps: list[dict[str, str]] = []
-    if report_cfg.get("include_news", True) and competitor_groups and (ai_cfg.get("prompt_competitors") or "").strip() and runtime.api_key:
+    if section_settings.include_competitors and competitor_groups and (ai_cfg.get("prompt_competitors") or "").strip() and runtime.api_key:
         for cname in sorted(competitor_groups.keys()):
             plan_steps.append({"step_id": f"competitor:{cname}", "title": f"Конкурент: {cname}"})
-    if report_cfg.get("include_news", True) and developer_groups:
+    if section_settings.include_developers and developer_groups:
         prompt_dev_chk = (ai_cfg.get("prompt_developers") or "").strip() or (ai_cfg.get("prompt_competitors") or "").strip()
         if prompt_dev_chk and runtime.api_key:
             for dname in sorted(developer_groups.keys()):
                 plan_steps.append({"step_id": f"developer:{dname}", "title": f"Застройщик: {dname}"})
-    if report_cfg.get("include_news", True) and general_news and (ai_cfg.get("prompt_news") or "").strip() and runtime.api_key:
+    if section_settings.include_general_news and general_news and (ai_cfg.get("prompt_news") or "").strip() and runtime.api_key:
         plan_steps.append({"step_id": "news:general", "title": "Общие новости"})
-    if report_cfg.get("include_indicators", True) and (ai_cfg.get("prompt_indicators") or "").strip() and runtime.api_key:
+    if section_settings.include_indicators and (ai_cfg.get("prompt_indicators") or "").strip() and runtime.api_key:
         plan_steps.append({"step_id": "indicators", "title": "Индикаторы"})
-    if report_cfg.get("include_regions", True) and (ai_cfg.get("prompt_regions") or "").strip() and runtime.api_key:
+    if section_settings.include_regions and (ai_cfg.get("prompt_regions") or "").strip() and runtime.api_key:
         for rname in sorted(region_groups.keys()):
             if region_groups.get(rname):
                 plan_steps.append({"step_id": f"region:{rname}", "title": f"Регион: {rname}"})
-    if report_cfg.get("include_news", True) and all_news and (ai_cfg.get("prompt_clusters") or "").strip() and runtime.api_key:
+    if section_settings.include_clusters and all_news and (ai_cfg.get("prompt_clusters") or "").strip() and runtime.api_key:
         plan_steps.append({"step_id": "clusters", "title": "Кластеры новостей"})
 
     _emit_progress(
@@ -746,7 +799,7 @@ def generate_report(
         },
     )
 
-    if report_cfg.get("include_news", True) and competitor_groups:
+    if section_settings.include_competitors and competitor_groups:
         prompt_comp = (ai_cfg.get("prompt_competitors") or "").strip()
         for cname, items in sorted(competitor_groups.items()):
             entity_data = _serialize_news_for_ai(
@@ -767,7 +820,7 @@ def generate_report(
             else:
                 result["processed_competitors_by_name"][cname] = _simple_news_summary_linked(items, title=f"Конкурент {cname}")
 
-    if report_cfg.get("include_news", True) and developer_groups:
+    if section_settings.include_developers and developer_groups:
         prompt_dev = (ai_cfg.get("prompt_developers") or "").strip() or (ai_cfg.get("prompt_competitors") or "").strip()
         for dname, items in sorted(developer_groups.items()):
             entity_data = _serialize_news_for_ai(items, section_subject=dname)
@@ -784,7 +837,7 @@ def generate_report(
             else:
                 result["processed_developers_by_name"][dname] = _simple_news_summary_linked(items, title=f"Застройщик {dname}")
 
-    if report_cfg.get("include_news", True) and general_news:
+    if section_settings.include_general_news and general_news:
         prompt_news = (ai_cfg.get("prompt_news") or "").strip()
         data_str = _serialize_news_for_ai(general_news)
         if prompt_news and runtime.api_key:
@@ -800,7 +853,7 @@ def generate_report(
         else:
             result["processed_news"] = _simple_news_summary_linked(general_news, title="Общие новости")
 
-    if report_cfg.get("include_indicators", True):
+    if section_settings.include_indicators:
         prompt_ind = (ai_cfg.get("prompt_indicators") or "").strip()
         data_str = _serialize_indicators(raw["daily_indicators"], raw["parsed_indicators"])
         if prompt_ind and runtime.api_key:
@@ -817,7 +870,7 @@ def generate_report(
         else:
             result["processed_indicators"] = data_str
 
-    if report_cfg.get("include_regions", True):
+    if section_settings.include_regions:
         prompt_reg = (ai_cfg.get("prompt_regions") or "").strip()
         for rname, items in sorted(region_groups.items()):
             if not items:
@@ -837,7 +890,7 @@ def generate_report(
                 result["processed_regions_by_name"][rname] = _simple_news_summary_linked(items, title=f"Регион {rname}")
 
     # Кластеры похожих новостей (главная новость входит в выборку отчёта)
-    if report_cfg.get("include_news", True) and all_news:
+    if section_settings.include_clusters and all_news:
         news_id_set = frozenset(n.id for n in all_news)
         clusters_list = _fetch_clusters_for_report(db, news_id_set)
         if clusters_list:
