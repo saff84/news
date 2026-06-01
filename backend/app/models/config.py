@@ -63,6 +63,16 @@ class AIConfig(Base):
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=func.now())
 
 
+class IndicatorTelegramConfig(Base):
+    """Настройки TG-канала для карточек в разделе «Индикаторы»."""
+
+    __tablename__ = "indicator_telegram_config"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    settings_json: Mapped[dict] = mapped_column(JSONB, nullable=False, default=dict)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=func.now())
+
+
 class NewsFilterConfig(Base):
     """Глобальные минус/плюс слова для всех источников при сборе новостей."""
 

@@ -12,6 +12,13 @@ ProgressCallback = Callable[[dict[str, Any]], None]
 from sqlalchemy import and_
 from sqlalchemy.orm import Session
 
+from app.services.indicator_telegram_config import get_indicator_telegram_config
+from app.services.indicator_telegram_report import (
+    build_indicator_telegram_sections,
+    fetch_indicator_telegram_posts_for_period,
+    merge_ai_into_sections,
+    serialize_section_for_ai,
+)
 from app.models.domain import (
     Competitor,
     Developer,
@@ -333,6 +340,14 @@ def fetch_report_data(
             .all()
         )
 
+    indicator_telegram_posts = []
+    if include_indicators:
+        tg_cfg = get_indicator_telegram_config(db)
+        if tg_cfg.get("include_in_report", True):
+            indicator_telegram_posts = fetch_indicator_telegram_posts_for_period(
+                db, date_from=date_from, date_to=date_to
+            )
+
     regions_list = []
     if include_regions:
         regions_list = db.query(Region).filter(Region.is_active.is_(True)).order_by(Region.name).all()
@@ -341,6 +356,7 @@ def fetch_report_data(
         "news": news_items,
         "daily_indicators": daily_indicators,
         "parsed_indicators": parsed_indicators,
+        "indicator_telegram_posts": indicator_telegram_posts,
         "regions": regions_list,
     }
 
@@ -483,6 +499,9 @@ def get_report_data_for_pdf(
         "news_by_channel": news_by_channel,
         "daily_indicators": raw["daily_indicators"],
         "parsed_indicators": raw["parsed_indicators"],
+        "indicator_telegram_sections": build_indicator_telegram_sections(
+            db, raw.get("indicator_telegram_posts") or []
+        ),
         "regions": regions_list,
         "report_config": {},
         "period": {"date_from": str(date_from), "date_to": str(date_to)},
@@ -638,6 +657,7 @@ def generate_report(
         "processed_clusters": None,
         "processed_news_json": None,
         "processed_indicators_json": None,
+        "indicator_telegram_sections": [],
         "processed_clusters_json": None,
         "processed_competitors_by_name": {},
         "processed_developers_by_name": {},
@@ -854,6 +874,26 @@ def generate_report(
             result["processed_news"] = _simple_news_summary_linked(general_news, title="Общие новости")
 
     if section_settings.include_indicators:
+        tg_sections = build_indicator_telegram_sections(db, raw.get("indicator_telegram_posts") or [])
+        tg_cfg = get_indicator_telegram_config(db)
+        if tg_sections and tg_cfg.get("ai_in_report"):
+            prompt_tg = (ai_cfg.get("prompt_indicator_telegram") or ai_cfg.get("prompt_indicators") or "").strip()
+            ai_by_title: dict[str, tuple[str | None, dict[str, Any] | None]] = {}
+            if prompt_tg and runtime.api_key:
+                for sec in tg_sections:
+                    title = str(sec.get("title") or "")
+                    data_tg = serialize_section_for_ai(sec)
+                    text, payload = _run_ai(
+                        label=f"indicator_tg:{title}",
+                        title=title,
+                        prompt=prompt_tg,
+                        data=data_tg,
+                        link_hint=False,
+                    )
+                    ai_by_title[title] = (text, payload)
+            tg_sections = merge_ai_into_sections(tg_sections, ai_by_title)
+        result["indicator_telegram_sections"] = tg_sections
+
         prompt_ind = (ai_cfg.get("prompt_indicators") or "").strip()
         data_str = _serialize_indicators(raw["daily_indicators"], raw["parsed_indicators"])
         if prompt_ind and runtime.api_key:

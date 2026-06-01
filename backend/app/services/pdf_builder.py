@@ -12,10 +12,12 @@ from reportlab.lib.styles import ParagraphStyle, getSampleStyleSheet
 from reportlab.lib.units import cm
 from reportlab.pdfbase import pdfmetrics
 from reportlab.pdfbase.ttfonts import TTFont
+from reportlab.platypus import Image as RLImage
 from reportlab.platypus import PageBreak, Paragraph, SimpleDocTemplate, Spacer
 from reportlab.graphics.shapes import Drawing
 from reportlab.graphics.charts.linecharts import HorizontalLineChart
 
+from app.services.indicator_telegram_report import image_path_to_filesystem
 from app.services.report_markup import markdown_links_to_reportlab_markup
 from app.services.report_section_render import append_section_json_to_pdf_story
 
@@ -126,6 +128,7 @@ def build_report_pdf(
     processed_competitors_by_name_json: dict[str, Any] | None = None,
     processed_developers_by_name_json: dict[str, Any] | None = None,
     processed_regions_by_name_json: dict[str, Any] | None = None,
+    indicator_telegram_sections: list[dict[str, Any]] | None = None,
     **kwargs: Any,
 ) -> bytes:
     """PDF: графики индикаторов и текстовые саммари по застройщикам, конкурентам, регионам (Markdown-ссылки → кликабельные)."""
@@ -161,10 +164,50 @@ def build_report_pdf(
     story.append(Paragraph(f"<b>Период:</b> {period_from} — {period_to}", normal_style))
     story.append(Spacer(1, 1 * cm))
 
-    # Индикаторы — графики (не текст)
-    if daily_indicators or parsed_indicators:
+    # Индикаторы — Telegram (ввод жилья / МКД) и графики
+    has_tg = bool(indicator_telegram_sections)
+    if daily_indicators or parsed_indicators or has_tg:
         story.append(Paragraph("<b>Индикаторы</b>", h2_style))
         story.append(Spacer(1, 0.3 * cm))
+
+    if has_tg:
+        from html import escape as html_escape
+
+        for sec in indicator_telegram_sections or []:
+            title = str(sec.get("title") or "").strip()
+            if title:
+                story.append(Paragraph(f"<b>{html_escape(title)}</b>", h3_style))
+            ai_json = sec.get("ai_json")
+            if isinstance(ai_json, dict) and ai_json:
+                append_section_json_to_pdf_story(
+                    story,
+                    section_title="",
+                    payload=ai_json,
+                    text_fallback=None,
+                    h3_style=h3_style,
+                    normal_style=normal_style,
+                    spacer_cm=0.2,
+                )
+            elif sec.get("ai_text"):
+                story.append(Paragraph(markdown_links_to_reportlab_markup(str(sec["ai_text"])), normal_style))
+                story.append(Spacer(1, 0.2 * cm))
+            for p in sec.get("posts") or []:
+                fs = image_path_to_filesystem(p.get("image_path"))
+                if fs:
+                    try:
+                        img = RLImage(str(fs), width=16 * cm, height=9 * cm, kind="proportional")
+                        story.append(img)
+                        story.append(Spacer(1, 0.2 * cm))
+                    except Exception:
+                        pass
+                if p.get("text"):
+                    txt = str(p["text"]).replace("\n", "<br/>")
+                    story.append(Paragraph(html_escape(txt)[:4000], normal_style))
+                if p.get("post_url"):
+                    story.append(Paragraph(f'<a href="{html_escape(str(p["post_url"]))}">Telegram</a>', normal_style))
+                story.append(Spacer(1, 0.35 * cm))
+        story.append(Spacer(1, 0.3 * cm))
+
     if daily_indicators:
         story.append(Paragraph("<b>Курс CNY/RUB</b>", h3_style))
         dates = [str(r.period_date) for r in daily_indicators]

@@ -200,6 +200,53 @@ export type NewsItemOut = {
   updated_at: string;
 };
 
+export type IndicatorTelegramReportGroup = {
+  title: string;
+  keywords: string[];
+};
+
+export type IndicatorTelegramConfigOut = {
+  enabled: boolean;
+  channel_username: string;
+  include_keywords: string[];
+  exclude_keywords: string[];
+  match_whole_words: boolean;
+  backfill_limit: number;
+  include_in_report: boolean;
+  ai_in_report: boolean;
+  report_groups: IndicatorTelegramReportGroup[];
+  last_message_id: number | null;
+  last_fetch_at: string | null;
+  last_error: string | null;
+};
+
+export type IndicatorTelegramSection = {
+  title: string;
+  keywords: string[];
+  posts: Array<{
+    id: string;
+    text: string | null;
+    image_path: string | null;
+    post_url: string;
+    published_at: string | null;
+    matched_keywords: string[];
+  }>;
+  ai_text: string | null;
+  ai_json: Record<string, unknown> | null;
+};
+
+export type IndicatorTelegramPostOut = {
+  id: string;
+  channel_username: string;
+  message_id: number;
+  post_url: string;
+  text: string | null;
+  image_path: string | null;
+  published_at: string | null;
+  matched_keywords: string[];
+  created_at: string;
+};
+
 export type NewsEntitySyncOut = {
   checked: number;
   updated_developer: number;
@@ -603,6 +650,40 @@ export const api = {
       request<ParsedIndicatorOut>(`/api/indicators/parsed/${id}`, { method: "PATCH", body: JSON.stringify(payload) }, accessToken),
     parsedDelete: (accessToken: string, id: string) =>
       request<void>(`/api/indicators/parsed/${id}`, { method: "DELETE" }, accessToken),
+    telegramConfig: {
+      get: (accessToken: string) =>
+        request<IndicatorTelegramConfigOut>("/api/indicators/telegram/config", { method: "GET" }, accessToken),
+      update: (
+        accessToken: string,
+        payload: Partial<{
+          enabled: boolean;
+          channel_username: string;
+          include_keywords: string[];
+          exclude_keywords: string[];
+          match_whole_words: boolean;
+          backfill_limit: number;
+          include_in_report: boolean;
+          ai_in_report: boolean;
+          report_groups: IndicatorTelegramReportGroup[];
+        }>,
+      ) =>
+        request<IndicatorTelegramConfigOut>("/api/indicators/telegram/config", { method: "PUT", body: JSON.stringify(payload) }, accessToken),
+      posts: (accessToken: string, params?: { limit?: number; offset?: number }) => {
+        const sp = new URLSearchParams();
+        if (params?.limit != null) sp.set("limit", String(params.limit));
+        if (params?.offset != null) sp.set("offset", String(params.offset));
+        const qs = sp.toString() ? `?${sp.toString()}` : "";
+        return request<{ items: IndicatorTelegramPostOut[]; total: number }>(`/api/indicators/telegram/posts${qs}`, { method: "GET" }, accessToken);
+      },
+      collectNow: (accessToken: string) =>
+        request<{ status: string; channel?: string; fetched?: number; matched?: number; inserted?: number; updated?: number }>(
+          "/api/indicators/telegram/collect-now",
+          { method: "POST" },
+          accessToken,
+        ),
+      deletePost: (accessToken: string, id: string) =>
+        request<void>(`/api/indicators/telegram/posts/${id}`, { method: "DELETE" }, accessToken),
+    },
   },
   reportConfig: {
     get: (accessToken: string) =>
@@ -815,6 +896,7 @@ export const api = {
         processed_competitors_by_name_json?: Record<string, Record<string, unknown>>;
         processed_developers_by_name_json?: Record<string, Record<string, unknown>>;
         processed_regions_by_name_json?: Record<string, Record<string, unknown>>;
+        indicator_telegram_sections?: IndicatorTelegramSection[];
       },
     ): Promise<Blob> => {
       const res = await fetch(resolveApiUrl("/api/reports/generate-pdf"), {
@@ -869,6 +951,7 @@ export const api = {
         processed_competitors_by_name_json?: Record<string, Record<string, unknown>>;
         processed_developers_by_name_json?: Record<string, Record<string, unknown>>;
         processed_regions_by_name_json?: Record<string, Record<string, unknown>>;
+        indicator_telegram_sections?: IndicatorTelegramSection[];
       },
     ) =>
       request<{

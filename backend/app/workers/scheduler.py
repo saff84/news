@@ -104,6 +104,33 @@ def enqueue_due_indicators() -> int:
             q.enqueue(run_indicator_job, "CNY_RUB", job_timeout=120)
             enqueued += 1
 
+    # Telegram-канал для карточек в «Индикаторы»
+    from app.db import SessionLocal
+    from app.services.indicator_telegram_config import get_indicator_telegram_config
+
+    db = SessionLocal()
+    try:
+        tg_cfg = get_indicator_telegram_config(db)
+    finally:
+        db.close()
+
+    if tg_cfg.get("enabled") and str(tg_cfg.get("channel_username") or "").strip():
+        lock_key = "lock:indicator:INDICATOR_TG"
+        last_ok_key = "indicators:INDICATOR_TG:last_ok_ts"
+        min_interval_s = int(os.getenv("INDICATOR_TG_MIN_INTERVAL_S", "1800"))
+        try:
+            last_ok = int(redis.get(last_ok_key) or 0)
+        except Exception:
+            last_ok = 0
+        if now - last_ok >= min_interval_s:
+            try:
+                locked = redis.set(lock_key, "1", nx=True, ex=60 * 15)
+            except Exception:
+                locked = True
+            if locked:
+                q.enqueue(run_indicator_job, "INDICATOR_TG", job_timeout=300)
+                enqueued += 1
+
     return enqueued
 
 

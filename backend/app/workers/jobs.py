@@ -15,7 +15,7 @@ from app.parsers.max_ingestor import ingest_max_channel
 from app.parsers.rss_ingestor import ingest_rss
 from app.parsers.telegram_ingestor import ingest_telegram
 from app.parsers.vk_ingestor import ingest_vk_group
-from app.workers.indicators import fetch_indicator_cny_rub
+from app.workers.indicators import fetch_indicator_cny_rub, fetch_indicator_telegram_posts
 from app.workers.queue import get_redis
 
 log = logging.getLogger("workers.jobs")
@@ -33,10 +33,12 @@ def run_indicator_job(series: str) -> dict:
     try:
         if series == "CNY_RUB":
             res = fetch_indicator_cny_rub(db)
+        elif series == "INDICATOR_TG":
+            res = fetch_indicator_telegram_posts(db)
         else:
             raise ValueError(f"Unknown indicator series: {series}")
         try:
-            redis.set("indicators:CNY_RUB:last_ok_ts", str(int(time.time())), ex=7 * 24 * 60 * 60)
+            redis.set(f"indicators:{series}:last_ok_ts", str(int(time.time())), ex=7 * 24 * 60 * 60)
         except Exception:
             pass
         return res

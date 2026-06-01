@@ -122,6 +122,7 @@ type GeneratedReport = {
   processed_competitors_by_name_json: Record<string, Record<string, unknown>>;
   processed_developers_by_name_json: Record<string, Record<string, unknown>>;
   processed_regions_by_name_json: Record<string, Record<string, unknown>>;
+  indicator_telegram_sections?: import("../lib/api").IndicatorTelegramSection[];
 };
 
 type AiStepStatus = "pending" | "sending" | "receiving" | "done" | "error" | "skipped";
@@ -772,6 +773,7 @@ export function ReportConfigPage() {
                         processed_competitors_by_name_json: generated.processed_competitors_by_name_json,
                         processed_developers_by_name_json: generated.processed_developers_by_name_json,
                         processed_regions_by_name_json: generated.processed_regions_by_name_json,
+                        indicator_telegram_sections: generated.indicator_telegram_sections,
                       }
                     : {}),
                 });
@@ -989,6 +991,7 @@ export function ReportConfigPage() {
                       processed_competitors_by_name_json: generated.processed_competitors_by_name_json,
                       processed_developers_by_name_json: generated.processed_developers_by_name_json,
                       processed_regions_by_name_json: generated.processed_regions_by_name_json,
+                      indicator_telegram_sections: generated.indicator_telegram_sections,
                     });
                     const url = `${window.location.origin}${meta.public_path}`;
                     await reloadPublished();
@@ -1079,6 +1082,7 @@ export function ReportConfigPage() {
                     processed_competitors_by_name_json: generated!.processed_competitors_by_name_json,
                     processed_developers_by_name_json: generated!.processed_developers_by_name_json,
                     processed_regions_by_name_json: generated!.processed_regions_by_name_json,
+                    indicator_telegram_sections: generated!.indicator_telegram_sections,
                   });
                   const url = URL.createObjectURL(blob);
                   const a = document.createElement("a");

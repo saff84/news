@@ -9,6 +9,7 @@ from typing import Any
 
 from app.services.period_sort import period_sort_key
 from app.services.report_markup import markdown_links_to_html
+from app.services.indicator_telegram_report import indicator_telegram_sections_to_html
 from app.services.report_section_render import section_dict_to_html_fragment
 
 
@@ -98,6 +99,7 @@ def build_report_html(
     processed_competitors_by_name_json: dict[str, Any] | None = None,
     processed_developers_by_name_json: dict[str, Any] | None = None,
     processed_regions_by_name_json: dict[str, Any] | None = None,
+    indicator_telegram_sections: list[dict[str, Any]] | None = None,
     **_: Any,
 ) -> str:
     cfg = report_config or {}
@@ -177,6 +179,8 @@ def build_report_html(
     if not ind_html and processed_indicators:
         ind_html = f'<div class="summary rich">{markdown_links_to_html(processed_indicators)}</div>'
 
+    tg_indicators_html = indicator_telegram_sections_to_html(indicator_telegram_sections)
+
     return f"""<!doctype html>
 <html lang="ru">
 <head>
@@ -201,6 +205,14 @@ def build_report_html(
     .summary.structured .sec-lead, .summary.structured .sec-closing {{ margin: 8px 0; }}
     .two {{ display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }}
     @media (max-width: 900px) {{ .two {{ grid-template-columns: 1fr; }} }}
+    .tg-indicators {{ margin-top: 16px; display: flex; flex-direction: column; gap: 20px; }}
+    .tg-indicator-block h3 {{ margin: 0 0 10px 0; font-size: 17px; }}
+    .tg-post-grid {{ display: grid; grid-template-columns: repeat(auto-fill, minmax(280px, 1fr)); gap: 12px; margin-top: 10px; }}
+    .tg-post-card {{ border: 1px solid #e2e8f0; border-radius: 12px; overflow: hidden; background: #fff; padding: 0 0 10px 0; }}
+    .tg-post-img {{ width: 100%; max-height: 320px; object-fit: cover; display: block; background: #f1f5f9; }}
+    .tg-post-text {{ margin: 8px 10px; font-size: 13px; line-height: 1.45; white-space: pre-wrap; }}
+    .tg-post-meta {{ margin: 6px 10px 0; }}
+    .tg-post-link {{ margin: 0 10px; font-size: 12px; color: #2563eb; }}
   </style>
 </head>
 <body>
@@ -214,6 +226,7 @@ def build_report_html(
 
     <section class="card">
       <h3>Индикаторы</h3>
+      {tg_indicators_html}
       {ind_html}
       <div id="cny_chart" style="height:360px"></div>
       <div class="grid" id="parsed_charts"></div>

@@ -280,6 +280,25 @@ class IndicatorDaily(Base, UUIDPrimaryKeyMixin):
     __table_args__ = (UniqueConstraint("series", "period_date", name="uq_indicators_series_date"),)
 
 
+class IndicatorTelegramPost(Base, UUIDPrimaryKeyMixin):
+    """Пост из TG-канала для витрины в разделе «Индикаторы»."""
+
+    __tablename__ = "indicator_telegram_posts"
+
+    channel_username: Mapped[str] = mapped_column(String(128), nullable=False, index=True)
+    message_id: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    post_url: Mapped[str] = mapped_column(Text, nullable=False)
+    text: Mapped[str | None] = mapped_column(Text)
+    image_path: Mapped[str | None] = mapped_column(Text)
+    published_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), index=True)
+    matched_keywords: Mapped[list[str]] = mapped_column(ARRAY(String(120)), nullable=False, default=list)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=func.now())
+
+    __table_args__ = (
+        UniqueConstraint("channel_username", "message_id", name="uq_indicator_tg_posts_channel_message"),
+    )
+
+
 class ParsedIndicator(Base, UUIDPrimaryKeyMixin):
     __tablename__ = "parsed_indicators"
 

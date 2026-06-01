@@ -27,6 +27,7 @@ from app.services.report_generator import (
     generate_report,
     get_report_data_for_pdf,
 )
+from app.services.indicator_telegram_report import build_indicator_telegram_sections
 from app.services.report_storage import delete_published_report, list_published_reports, save_published_html
 
 log = logging.getLogger(__name__)
@@ -57,6 +58,7 @@ class ReportGeneratePdfIn(ReportGenerateIn):
     processed_competitors_by_name_json: dict[str, Any] = Field(default_factory=dict)
     processed_developers_by_name_json: dict[str, Any] = Field(default_factory=dict)
     processed_regions_by_name_json: dict[str, Any] = Field(default_factory=dict)
+    indicator_telegram_sections: list[dict[str, Any]] = Field(default_factory=list)
 
 
 class ReportGenerateOut(BaseModel):
@@ -77,6 +79,7 @@ class ReportGenerateOut(BaseModel):
     processed_competitors_by_name_json: dict[str, Any] = Field(default_factory=dict)
     processed_developers_by_name_json: dict[str, Any] = Field(default_factory=dict)
     processed_regions_by_name_json: dict[str, Any] = Field(default_factory=dict)
+    indicator_telegram_sections: list[dict[str, Any]] = Field(default_factory=list)
 
 
 class ReportPublishHtmlIn(ReportGeneratePdfIn):
@@ -169,6 +172,9 @@ def _build_html_report_data(
             "news_by_channel": {},
             "daily_indicators": raw["daily_indicators"],
             "parsed_indicators": raw["parsed_indicators"],
+            "indicator_telegram_sections": build_indicator_telegram_sections(
+                db, raw.get("indicator_telegram_posts") or []
+            ),
             "regions": [],
             "report_config": {},
             "period": {"date_from": str(date_from), "date_to": str(date_to)},
@@ -199,6 +205,8 @@ def _build_html_report_data(
     data["processed_competitors_by_name_json"] = generated.get("processed_competitors_by_name_json") or {}
     data["processed_developers_by_name_json"] = generated.get("processed_developers_by_name_json") or {}
     data["processed_regions_by_name_json"] = generated.get("processed_regions_by_name_json") or {}
+    if generated.get("indicator_telegram_sections") is not None:
+        data["indicator_telegram_sections"] = generated.get("indicator_telegram_sections") or []
     return data
 
 
@@ -232,6 +240,7 @@ def _generated_from_processed_payload(
         "processed_competitors_by_name_json": p.processed_competitors_by_name_json or {},
         "processed_developers_by_name_json": p.processed_developers_by_name_json or {},
         "processed_regions_by_name_json": p.processed_regions_by_name_json or {},
+        "indicator_telegram_sections": p.indicator_telegram_sections or [],
     }
 
 

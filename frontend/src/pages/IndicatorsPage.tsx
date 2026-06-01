@@ -1,7 +1,15 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { FileUp, Pencil, Plus, Trash2 } from "lucide-react";
 import { LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, LabelList } from "recharts";
-import { api, type IndicatorHistoryOut, type IndicatorLatestOut, type ParsedIndicatorOut } from "../lib/api";
+import {
+  api,
+  type IndicatorHistoryOut,
+  type IndicatorLatestOut,
+  type IndicatorTelegramConfigOut,
+  type IndicatorTelegramPostOut,
+  type IndicatorTelegramReportGroup,
+  type ParsedIndicatorOut,
+} from "../lib/api";
 import { useAuth } from "../state/auth";
 import { useToast } from "../state/toast";
 import { HintBox } from "../components/Field";
@@ -122,6 +130,17 @@ function formatDate(s: string) {
   }
 }
 
+function parseKeywords(s: string): string[] {
+  return s
+    .split(/[\n,;]+/)
+    .map((x) => x.trim())
+    .filter(Boolean);
+}
+
+function keywordsToText(list: string[]): string {
+  return (list || []).join("\n");
+}
+
 function formatDateTime(s: string) {
   try {
     return new Intl.DateTimeFormat("ru-RU", { dateStyle: "medium", timeStyle: "short" }).format(new Date(s));
@@ -235,23 +254,63 @@ export function IndicatorsPage() {
   });
   const [keyRateBusy, setKeyRateBusy] = useState(false);
 
+  const [tgConfig, setTgConfig] = useState<IndicatorTelegramConfigOut | null>(null);
+  const [tgPosts, setTgPosts] = useState<IndicatorTelegramPostOut[]>([]);
+  const [tgForm, setTgForm] = useState({
+    enabled: false,
+    channel_username: "",
+    include_keywords: "",
+    exclude_keywords: "",
+    match_whole_words: false,
+    backfill_limit: 100,
+    include_in_report: true,
+    ai_in_report: false,
+    report_groups: [
+      { title: "Ввод жилья", keywords: "ввод жилья" },
+      { title: "Ввод МКД", keywords: "многоквартирных\nмкд" },
+    ] as Array<{ title: string; keywords: string }>,
+  });
+  const [tgConfigBusy, setTgConfigBusy] = useState(false);
+  const [tgCollectBusy, setTgCollectBusy] = useState(false);
+
   const reload = useCallback(async () => {
     if (!accessToken) return;
     setLoading(true);
     setError(null);
     setNotCollectedYet(false);
     try {
-      const [l, h, names, list] = await Promise.all([
+      const [l, h, names, list, tgCfg, tgList] = await Promise.all([
         api.indicators.cnyRubLatest(accessToken).catch(() => null),
         api.indicators.cnyRubHistory(accessToken, days).catch((e: any) => (e?.message?.includes("not collected") ? { series: "CNY_RUB", unit: "RUB", items: [] } : Promise.reject(e))),
         api.indicators.parsedNames(accessToken),
         api.indicators.parsedList(accessToken),
+        api.indicators.telegramConfig.get(accessToken),
+        api.indicators.telegramConfig.posts(accessToken, { limit: 60 }),
       ]);
       setLatest(l || null);
       setCnyHistory(h);
       if (h?.items?.length === 0) setNotCollectedYet(true);
       setParsedNames(names);
       setParsedItems(list.items);
+      setTgConfig(tgCfg);
+      setTgPosts(tgList.items);
+      setTgForm({
+        enabled: tgCfg.enabled,
+        channel_username: tgCfg.channel_username,
+        include_keywords: keywordsToText(tgCfg.include_keywords),
+        exclude_keywords: keywordsToText(tgCfg.exclude_keywords),
+        match_whole_words: tgCfg.match_whole_words,
+        backfill_limit: tgCfg.backfill_limit,
+        include_in_report: tgCfg.include_in_report ?? true,
+        ai_in_report: tgCfg.ai_in_report ?? false,
+        report_groups: (tgCfg.report_groups?.length
+          ? tgCfg.report_groups
+          : [
+              { title: "Ввод жилья", keywords: ["ввод жилья"] },
+              { title: "Ввод МКД", keywords: ["многоквартирных", "мкд"] },
+            ]
+        ).map((g) => ({ title: g.title, keywords: keywordsToText(g.keywords) })),
+      });
 
       const hist: Record<string, Array<{ period: string; value: number; unit?: string | null }>> = {};
       for (const name of names) {
@@ -275,6 +334,54 @@ export function IndicatorsPage() {
   useEffect(() => {
     reload();
   }, [reload]);
+
+  const saveTgConfig = async () => {
+    if (!accessToken) return;
+    setTgConfigBusy(true);
+    try {
+      const report_groups: IndicatorTelegramReportGroup[] = tgForm.report_groups
+        .map((g) => ({
+          title: g.title.trim(),
+          keywords: parseKeywords(g.keywords),
+        }))
+        .filter((g) => g.title && g.keywords.length > 0);
+      const updated = await api.indicators.telegramConfig.update(accessToken, {
+        enabled: tgForm.enabled,
+        channel_username: tgForm.channel_username.trim().replace(/^@/, ""),
+        include_keywords: parseKeywords(tgForm.include_keywords),
+        exclude_keywords: parseKeywords(tgForm.exclude_keywords),
+        match_whole_words: tgForm.match_whole_words,
+        backfill_limit: tgForm.backfill_limit,
+        include_in_report: tgForm.include_in_report,
+        ai_in_report: tgForm.ai_in_report,
+        report_groups,
+      });
+      setTgConfig(updated);
+      push({ variant: "success", title: "Telegram", description: "Настройки сохранены" });
+    } catch (e: any) {
+      push({ variant: "error", title: "Telegram", description: e?.message || "Не удалось сохранить" });
+    } finally {
+      setTgConfigBusy(false);
+    }
+  };
+
+  const collectTgNow = async () => {
+    if (!accessToken) return;
+    setTgCollectBusy(true);
+    try {
+      const res = await api.indicators.telegramConfig.collectNow(accessToken);
+      push({
+        variant: "success",
+        title: "Telegram",
+        description: `Собрано: ${res.matched ?? 0} из ${res.fetched ?? 0}, новых ${res.inserted ?? 0}`,
+      });
+      await reload();
+    } catch (e: any) {
+      push({ variant: "error", title: "Telegram", description: e?.message || "Ошибка сбора" });
+    } finally {
+      setTgCollectBusy(false);
+    }
+  };
 
   const collectNow = async () => {
     if (!accessToken) return;
@@ -491,6 +598,197 @@ export function IndicatorsPage() {
       </div>
 
       {error ? <div className="mt-3 rounded border border-red-200 bg-red-50 p-2 text-sm text-red-700">{error}</div> : null}
+
+      <div className="mt-6 rounded-2xl border border-slate-200/80 bg-white p-4 shadow-sm">
+        <div className="flex flex-wrap items-start justify-between gap-3">
+          <div>
+            <h2 className="text-lg font-semibold text-slate-800">Telegram для индикаторов</h2>
+            <p className="mt-1 text-sm text-slate-600">
+              Посты из канала по ключевым словам: первая картинка и текст. Нужна авторизация в разделе «Telegram-парсер».
+            </p>
+            {tgConfig?.last_fetch_at ? (
+              <p className="mt-1 text-xs text-slate-500">
+                Последний сбор: {formatDateTime(tgConfig.last_fetch_at)}
+                {tgConfig.last_error ? ` · ошибка: ${tgConfig.last_error}` : ""}
+              </p>
+            ) : null}
+          </div>
+          {user?.role === "Admin" ? (
+            <div className="flex flex-wrap gap-2">
+              <button
+                type="button"
+                className="rounded border bg-white px-3 py-2 text-sm hover:bg-slate-50 disabled:opacity-50"
+                onClick={saveTgConfig}
+                disabled={tgConfigBusy}
+              >
+                Сохранить настройки
+              </button>
+              <button
+                type="button"
+                className="rounded bg-sky-700 px-3 py-2 text-sm text-white hover:bg-sky-800 disabled:opacity-50"
+                onClick={collectTgNow}
+                disabled={tgCollectBusy || !tgForm.enabled}
+              >
+                {tgCollectBusy ? "Сбор…" : "Собрать из Telegram"}
+              </button>
+            </div>
+          ) : null}
+        </div>
+
+        {user?.role === "Admin" ? (
+          <div className="mt-4 grid grid-cols-1 gap-3 md:grid-cols-2">
+            <label className="flex items-center gap-2 md:col-span-2">
+              <input
+                type="checkbox"
+                checked={tgForm.enabled}
+                onChange={(e) => setTgForm((f) => ({ ...f, enabled: e.target.checked }))}
+              />
+              <span className="text-sm">Включить автосбор (планировщик)</span>
+            </label>
+            <label className="block">
+              <span className="text-xs text-slate-600">Канал (@username)</span>
+              <input
+                className="mt-1 w-full rounded border px-3 py-2 text-sm"
+                placeholder="erzrf"
+                value={tgForm.channel_username}
+                onChange={(e) => setTgForm((f) => ({ ...f, channel_username: e.target.value }))}
+              />
+            </label>
+            <label className="block">
+              <span className="text-xs text-slate-600">Лимит сообщений за проход</span>
+              <input
+                type="number"
+                min={10}
+                max={500}
+                className="mt-1 w-full rounded border px-3 py-2 text-sm"
+                value={tgForm.backfill_limit}
+                onChange={(e) => setTgForm((f) => ({ ...f, backfill_limit: Number(e.target.value) || 100 }))}
+              />
+            </label>
+            <label className="block md:col-span-2">
+              <span className="text-xs text-slate-600">Включить (хотя бы одно слово)</span>
+              <textarea
+                className="mt-1 w-full rounded border px-3 py-2 text-sm"
+                rows={2}
+                placeholder="ввод жилья, многоквартирных"
+                value={tgForm.include_keywords}
+                onChange={(e) => setTgForm((f) => ({ ...f, include_keywords: e.target.value }))}
+              />
+            </label>
+            <label className="block md:col-span-2">
+              <span className="text-xs text-slate-600">Исключить</span>
+              <textarea
+                className="mt-1 w-full rounded border px-3 py-2 text-sm"
+                rows={2}
+                value={tgForm.exclude_keywords}
+                onChange={(e) => setTgForm((f) => ({ ...f, exclude_keywords: e.target.value }))}
+              />
+            </label>
+            <label className="flex items-center gap-2 md:col-span-2">
+              <input
+                type="checkbox"
+                checked={tgForm.match_whole_words}
+                onChange={(e) => setTgForm((f) => ({ ...f, match_whole_words: e.target.checked }))}
+              />
+              <span className="text-sm">Целые слова</span>
+            </label>
+            <div className="md:col-span-2 rounded-lg border border-slate-200 bg-slate-50 p-3">
+              <p className="text-sm font-medium text-slate-800">В отчёте (HTML / PDF)</p>
+              <p className="mt-1 text-xs text-slate-600">
+                Посты попадают в раздел «Индикаторы» с картинкой и текстом. По умолчанию без ИИ — в посте уже есть анализ.
+              </p>
+              <label className="mt-2 flex items-center gap-2">
+                <input
+                  type="checkbox"
+                  checked={tgForm.include_in_report}
+                  onChange={(e) => setTgForm((f) => ({ ...f, include_in_report: e.target.checked }))}
+                />
+                <span className="text-sm">Включать в отчёт</span>
+              </label>
+              <label className="mt-2 flex items-center gap-2">
+                <input
+                  type="checkbox"
+                  checked={tgForm.ai_in_report}
+                  onChange={(e) => setTgForm((f) => ({ ...f, ai_in_report: e.target.checked }))}
+                  disabled={!tgForm.include_in_report}
+                />
+                <span className="text-sm">Дополнительно обрабатывать через ИИ</span>
+              </label>
+            </div>
+            {tgForm.report_groups.map((g, idx) => (
+              <div key={idx} className="md:col-span-2 grid grid-cols-1 gap-2 rounded-lg border border-slate-200 p-3 md:grid-cols-2">
+                <label className="block">
+                  <span className="text-xs text-slate-600">Блок в отчёте</span>
+                  <input
+                    className="mt-1 w-full rounded border px-3 py-2 text-sm"
+                    value={g.title}
+                    onChange={(e) =>
+                      setTgForm((f) => {
+                        const groups = [...f.report_groups];
+                        groups[idx] = { ...groups[idx], title: e.target.value };
+                        return { ...f, report_groups: groups };
+                      })
+                    }
+                  />
+                </label>
+                <label className="block md:col-span-1">
+                  <span className="text-xs text-slate-600">Ключи для этого блока</span>
+                  <textarea
+                    className="mt-1 w-full rounded border px-3 py-2 text-sm"
+                    rows={2}
+                    value={g.keywords}
+                    onChange={(e) =>
+                      setTgForm((f) => {
+                        const groups = [...f.report_groups];
+                        groups[idx] = { ...groups[idx], keywords: e.target.value };
+                        return { ...f, report_groups: groups };
+                      })
+                    }
+                  />
+                </label>
+              </div>
+            ))}
+          </div>
+        ) : null}
+
+        <div className="mt-4 grid grid-cols-1 gap-4 sm:grid-cols-2 xl:grid-cols-3">
+          {tgPosts.length === 0 ? (
+            <p className="text-sm text-slate-500 sm:col-span-2 xl:col-span-3">Нет постов. Настройте канал и ключи, затем нажмите «Собрать из Telegram».</p>
+          ) : (
+            tgPosts.map((p) => (
+              <article key={p.id} className="overflow-hidden rounded-xl border border-slate-200 bg-slate-50">
+                {p.image_path ? (
+                  <a href={p.post_url} target="_blank" rel="noopener noreferrer">
+                    <img src={p.image_path} alt="" className="max-h-64 w-full object-cover bg-white" loading="lazy" />
+                  </a>
+                ) : (
+                  <div className="flex h-32 items-center justify-center bg-slate-200 text-xs text-slate-500">Без изображения</div>
+                )}
+                <div className="space-y-2 p-3">
+                  <div className="text-xs text-slate-500">
+                    @{p.channel_username}
+                    {p.published_at ? ` · ${formatDateTime(p.published_at)}` : ""}
+                  </div>
+                  {p.text ? <p className="text-sm text-slate-800 whitespace-pre-wrap line-clamp-6">{p.text}</p> : null}
+                  {p.matched_keywords?.length ? (
+                    <div className="flex flex-wrap gap-1">
+                      {p.matched_keywords.map((k) => (
+                        <span key={k} className="rounded bg-sky-100 px-1.5 py-0.5 text-xs text-sky-800">
+                          {k}
+                        </span>
+                      ))}
+                    </div>
+                  ) : null}
+                  <a href={p.post_url} target="_blank" rel="noopener noreferrer" className="text-xs text-sky-700 underline">
+                    Открыть в Telegram
+                  </a>
+                </div>
+              </article>
+            ))
+          )}
+        </div>
+      </div>
+
       {notCollectedYet ? (
         <div className="mt-3 rounded border border-amber-200 bg-amber-50 p-2 text-sm text-amber-800">
           Курс CNY ещё не собран. Нажмите <b>«Собрать CNY (MOEX)»</b> или дождитесь планировщика.

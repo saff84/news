@@ -58,3 +58,9 @@ def fetch_indicator_cny_rub(db: Session) -> dict:
         "source_name": "MOEX",
     }
 
+
+def fetch_indicator_telegram_posts(db: Session) -> dict:
+    from app.parsers.indicator_telegram_ingestor import ingest_indicator_telegram
+
+    return ingest_indicator_telegram(db)
+

@@ -33,6 +33,10 @@ def create_app() -> FastAPI:
     reports_dir.mkdir(parents=True, exist_ok=True)
     app.mount("/reports", StaticFiles(directory=str(reports_dir), html=True), name="published_reports")
 
+    indicator_media_dir = Path(settings.storage_dir) / "indicator_tg"
+    indicator_media_dir.mkdir(parents=True, exist_ok=True)
+    app.mount("/indicator-media", StaticFiles(directory=str(indicator_media_dir)), name="indicator_media")
+
     app.include_router(api_router)
     return app
 

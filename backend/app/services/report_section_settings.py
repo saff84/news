@@ -168,6 +168,7 @@ def apply_section_filters_to_generated(
     if not settings.include_indicators:
         g["processed_indicators"] = None
         g["processed_indicators_json"] = None
+        g["indicator_telegram_sections"] = []
     if not settings.include_general_news:
         g["processed_news"] = None
         g["processed_news_json"] = None
