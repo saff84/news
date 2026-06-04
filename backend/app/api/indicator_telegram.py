@@ -121,8 +121,6 @@ def update_config(
     data = payload.model_dump(exclude_unset=True)
     if "channel_username" in data and data["channel_username"] is not None:
         data["channel_username"] = data["channel_username"].strip().lstrip("@")
-    if "report_groups" in data and data["report_groups"] is not None:
-        data["report_groups"] = [g.model_dump() for g in data["report_groups"]]
     save_indicator_telegram_config(db, **data)
     return _config_out(get_indicator_telegram_config(db))
 
