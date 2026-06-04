@@ -205,8 +205,9 @@ def _build_html_report_data(
     data["processed_competitors_by_name_json"] = generated.get("processed_competitors_by_name_json") or {}
     data["processed_developers_by_name_json"] = generated.get("processed_developers_by_name_json") or {}
     data["processed_regions_by_name_json"] = generated.get("processed_regions_by_name_json") or {}
-    if generated.get("indicator_telegram_sections") is not None:
-        data["indicator_telegram_sections"] = generated.get("indicator_telegram_sections") or []
+    tg_secs = generated.get("indicator_telegram_sections")
+    if tg_secs:
+        data["indicator_telegram_sections"] = tg_secs
     return data
 
 

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 from datetime import date, datetime, timezone
 from html import escape
 from pathlib import Path
@@ -17,8 +18,8 @@ from app.services.indicator_telegram_config import get_indicator_telegram_config
 
 def default_report_groups() -> list[dict[str, Any]]:
     return [
-        {"title": "Ввод жилья", "keywords": ["ввод жилья"]},
-        {"title": "Ввод МКД", "keywords": ["многоквартирных", "мкд"]},
+        {"title": "Ввод жилья", "keywords": ["ввод жилья", "введено", "жиль"]},
+        {"title": "Ввод МКД", "keywords": ["многоквартир", "мкд"]},
     ]
 
 
@@ -26,19 +27,56 @@ def _norm_kw(s: str) -> str:
     return (s or "").strip().lower()
 
 
+def _stem_overlap(a: str, b: str, *, min_prefix: int = 6) -> bool:
+    """Совпадение с учётом русских окончаний (многоквартирных / многоквартирного)."""
+    a, b = _norm_kw(a), _norm_kw(b)
+    if not a or not b:
+        return False
+    if a == b or a in b or b in a:
+        return True
+    n = min(len(a), len(b), 14)
+    for cut in range(n, min_prefix - 1, -1):
+        if a[:cut] == b[:cut]:
+            return True
+    return False
+
+
+def _token_matches_haystack(token: str, haystack: str, matched: list[str]) -> bool:
+    token = _norm_kw(token)
+    if not token:
+        return False
+    if token in haystack:
+        return True
+    for m in matched:
+        if _stem_overlap(token, m):
+            return True
+    if len(token) <= 4:
+        return bool(re.search(rf"(?<!\w){re.escape(token)}(?!\w)", haystack, flags=re.UNICODE))
+    root_len = max(5, len(token) - 3)
+    if token[:root_len] in haystack:
+        return True
+    if token.startswith("ввод") and "введ" in haystack:
+        return True
+    return False
+
+
 def _post_matches_group(post: IndicatorTelegramPost, group_keywords: list[str]) -> bool:
     keys = [_norm_kw(k) for k in group_keywords if _norm_kw(k)]
     if not keys:
         return False
     matched = [_norm_kw(m) for m in (post.matched_keywords or [])]
+    haystack = (post.text or "").lower()
+    if matched:
+        haystack = f"{haystack} {' '.join(matched)}"
+
     for k in keys:
-        if k in matched:
-            return True
-        for m in matched:
-            if k in m or m in k:
+        if " " in k:
+            parts = k.split()
+            if all(_token_matches_haystack(p, haystack, matched) for p in parts):
                 return True
-    text = (post.text or "").lower()
-    return any(k in text for k in keys)
+        elif _token_matches_haystack(k, haystack, matched):
+            return True
+    return False
 
 
 def post_to_dict(post: IndicatorTelegramPost) -> dict[str, Any]:
