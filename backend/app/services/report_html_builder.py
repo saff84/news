@@ -205,14 +205,17 @@ def build_report_html(
     .summary.structured .sec-lead, .summary.structured .sec-closing {{ margin: 8px 0; }}
     .two {{ display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }}
     @media (max-width: 900px) {{ .two {{ grid-template-columns: 1fr; }} }}
-    .tg-indicators {{ margin-top: 16px; display: flex; flex-direction: column; gap: 20px; }}
-    .tg-indicator-block h3 {{ margin: 0 0 10px 0; font-size: 17px; }}
-    .tg-post-grid {{ display: grid; grid-template-columns: repeat(auto-fill, minmax(280px, 1fr)); gap: 12px; margin-top: 10px; }}
-    .tg-post-card {{ border: 1px solid #e2e8f0; border-radius: 12px; overflow: hidden; background: #fff; padding: 0 0 10px 0; }}
-    .tg-post-img {{ width: 100%; max-height: 320px; object-fit: cover; display: block; background: #f1f5f9; }}
-    .tg-post-text {{ margin: 8px 10px; font-size: 13px; line-height: 1.45; white-space: pre-wrap; }}
-    .tg-post-meta {{ margin: 6px 10px 0; }}
-    .tg-post-link {{ margin: 0 10px; font-size: 12px; color: #2563eb; }}
+    .tg-indicators {{ margin-top: 16px; display: flex; flex-direction: column; gap: 24px; }}
+    .tg-indicator-block h3 {{ margin: 0 0 12px 0; font-size: 18px; }}
+    .tg-post-stack {{ display: flex; flex-direction: column; gap: 16px; margin-top: 8px; }}
+    .tg-post-card {{ border: 1px solid #e2e8f0; border-radius: 12px; overflow: hidden; background: #fff; padding: 0 0 12px 0; }}
+    .tg-post-images {{ display: flex; flex-direction: column; gap: 8px; }}
+    .tg-post-img {{ width: 100%; max-height: 420px; object-fit: contain; display: block; background: #f8fafc; }}
+    .tg-post-text {{ margin: 12px 16px 8px; font-size: 15px; line-height: 1.55; color: #1e293b; }}
+    .tg-post-text p {{ margin: 0 0 10px 0; }}
+    .tg-post-text p:last-child {{ margin-bottom: 0; }}
+    .tg-post-meta {{ margin: 8px 16px 0; }}
+    .tg-post-link {{ margin: 4px 16px 0; display: inline-block; font-size: 13px; color: #2563eb; }}
   </style>
 </head>
 <body>

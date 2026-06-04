@@ -290,6 +290,7 @@ class IndicatorTelegramPost(Base, UUIDPrimaryKeyMixin):
     post_url: Mapped[str] = mapped_column(Text, nullable=False)
     text: Mapped[str | None] = mapped_column(Text)
     image_path: Mapped[str | None] = mapped_column(Text)
+    image_paths: Mapped[list[str]] = mapped_column(ARRAY(String(512)), nullable=False, default=list)
     published_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), index=True)
     matched_keywords: Mapped[list[str]] = mapped_column(ARRAY(String(120)), nullable=False, default=list)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=func.now())

@@ -371,11 +371,14 @@ export function IndicatorsPage() {
     }
   };
 
-  const collectTgNow = async (resetHistory: boolean) => {
+  const collectTgNow = async (opts: { resetHistory?: boolean; refreshExisting?: boolean }) => {
     if (!accessToken) return;
     setTgCollectBusy(true);
     try {
-      const res = await api.indicators.telegramConfig.collectNow(accessToken, { reset_history: resetHistory });
+      const res = await api.indicators.telegramConfig.collectNow(accessToken, {
+        reset_history: opts.resetHistory,
+        refresh_existing: opts.refreshExisting ?? opts.resetHistory,
+      });
       if (res.status === "skipped") {
         push({ variant: "error", title: "Telegram", description: "Сбор отключён в настройках (включите автосбор и сохраните)" });
         return;
@@ -383,7 +386,7 @@ export function IndicatorsPage() {
       push({
         variant: "success",
         title: "Telegram",
-        description: `Собрано: ${res.matched ?? 0} из ${res.fetched ?? 0}, новых ${res.inserted ?? 0}`,
+        description: `Собрано: ${res.matched ?? 0} из ${res.fetched ?? 0}, новых ${res.inserted ?? 0}, обновлено ${res.updated ?? 0}`,
       });
       await reload();
     } catch (e: any) {
@@ -670,7 +673,7 @@ export function IndicatorsPage() {
               <button
                 type="button"
                 className="rounded bg-sky-700 px-3 py-2 text-sm text-white hover:bg-sky-800 disabled:opacity-50"
-                onClick={() => collectTgNow(false)}
+                onClick={() => collectTgNow({})}
                 disabled={tgCollectBusy}
               >
                 {tgCollectBusy ? "Сбор…" : "Новые посты"}
@@ -678,7 +681,16 @@ export function IndicatorsPage() {
               <button
                 type="button"
                 className="rounded border border-sky-700 bg-white px-3 py-2 text-sm text-sky-800 hover:bg-sky-50 disabled:opacity-50"
-                onClick={() => collectTgNow(true)}
+                onClick={() => collectTgNow({ refreshExisting: true })}
+                disabled={tgCollectBusy}
+                title="Перекачать все картинки альбомов и очистить текст уже сохранённых постов"
+              >
+                {tgCollectBusy ? "Сбор…" : "Обновить медиа"}
+              </button>
+              <button
+                type="button"
+                className="rounded border border-sky-700 bg-white px-3 py-2 text-sm text-sky-800 hover:bg-sky-50 disabled:opacity-50"
+                onClick={() => collectTgNow({ resetHistory: true })}
                 disabled={tgCollectBusy}
                 title="Сбросить курсор и пройти лимит сообщений из истории (для постов за май и раньше)"
               >
@@ -853,10 +865,14 @@ export function IndicatorsPage() {
           ) : (
             tgPosts.map((p) => (
               <article key={p.id} className="overflow-hidden rounded-xl border border-slate-200 bg-slate-50">
-                {p.image_path ? (
-                  <a href={p.post_url} target="_blank" rel="noopener noreferrer">
-                    <img src={p.image_path} alt="" className="max-h-64 w-full object-cover bg-white" loading="lazy" />
-                  </a>
+                {(p.image_paths?.length ? p.image_paths : p.image_path ? [p.image_path] : []).length > 0 ? (
+                  <div className="flex flex-col gap-1 bg-white">
+                    {(p.image_paths?.length ? p.image_paths : [p.image_path!]).map((src, i) => (
+                      <a key={`${p.id}-img-${i}`} href={p.post_url} target="_blank" rel="noopener noreferrer">
+                        <img src={src} alt="" className="max-h-64 w-full object-contain bg-white" loading="lazy" />
+                      </a>
+                    ))}
+                  </div>
                 ) : (
                   <div className="flex h-32 items-center justify-center bg-slate-200 text-xs text-slate-500">Без изображения</div>
                 )}

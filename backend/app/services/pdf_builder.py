@@ -192,17 +192,21 @@ def build_report_pdf(
                 story.append(Paragraph(markdown_links_to_reportlab_markup(str(sec["ai_text"])), normal_style))
                 story.append(Spacer(1, 0.2 * cm))
             for p in sec.get("posts") or []:
-                fs = image_path_to_filesystem(p.get("image_path"))
-                if fs:
-                    try:
-                        img = RLImage(str(fs), width=16 * cm, height=9 * cm, kind="proportional")
-                        story.append(img)
-                        story.append(Spacer(1, 0.2 * cm))
-                    except Exception:
-                        pass
+                paths = list(p.get("image_paths") or [])
+                if not paths and p.get("image_path"):
+                    paths = [str(p["image_path"])]
+                for img_path in paths:
+                    fs = image_path_to_filesystem(img_path)
+                    if fs:
+                        try:
+                            img = RLImage(str(fs), width=16 * cm, height=9 * cm, kind="proportional")
+                            story.append(img)
+                            story.append(Spacer(1, 0.2 * cm))
+                        except Exception:
+                            pass
                 if p.get("text"):
-                    txt = str(p["text"]).replace("\n", "<br/>")
-                    story.append(Paragraph(html_escape(txt)[:4000], normal_style))
+                    txt = html_escape(str(p["text"])).replace("\n\n", "<br/><br/>").replace("\n", "<br/>")
+                    story.append(Paragraph(txt[:4000], normal_style))
                 if p.get("post_url"):
                     story.append(Paragraph(f'<a href="{html_escape(str(p["post_url"]))}">Telegram</a>', normal_style))
                 story.append(Spacer(1, 0.35 * cm))

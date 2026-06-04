@@ -19,7 +19,7 @@ from app.services.indicator_telegram_config import (
     get_indicator_telegram_config,
     save_indicator_telegram_config,
 )
-from app.services.indicator_telegram_report import default_report_groups
+from app.services.indicator_telegram_report import clean_telegram_post_text, default_report_groups
 
 router = APIRouter(prefix="/indicators/telegram", tags=["indicators"])
 
@@ -73,6 +73,7 @@ class IndicatorTelegramPostOut(BaseModel):
     post_url: str
     text: str | None
     image_path: str | None
+    image_paths: list[str] = Field(default_factory=list)
     published_at: str | None
     matched_keywords: list[str]
     created_at: str
@@ -183,8 +184,9 @@ def list_posts(
             channel_username=r.channel_username,
             message_id=int(r.message_id),
             post_url=r.post_url,
-            text=r.text,
+            text=clean_telegram_post_text(r.text) or None,
             image_path=r.image_path,
+            image_paths=[p for p in (r.image_paths or []) if p] or ([r.image_path] if r.image_path else []),
             published_at=r.published_at.isoformat() if r.published_at else None,
             matched_keywords=list(r.matched_keywords or []),
             created_at=r.created_at.isoformat() if r.created_at else "",
@@ -200,11 +202,20 @@ def collect_now(
         False,
         description="Сбросить курсор и пройти backfill_limit сообщений из истории канала",
     ),
+    refresh_existing: bool = Query(
+        False,
+        description="Перекачать все картинки и текст для постов, уже сохранённых в БД",
+    ),
     db: Session = Depends(get_db),
     user: User = Depends(require_role(Role.ADMIN)),
 ) -> dict:
     try:
-        return ingest_indicator_telegram(db, force=True, reset_history=reset_history)
+        return ingest_indicator_telegram(
+            db,
+            force=True,
+            reset_history=reset_history,
+            refresh_existing=refresh_existing or reset_history,
+        )
     except Exception as e:
         raise HTTPException(
             status_code=status.HTTP_502_BAD_GATEWAY,

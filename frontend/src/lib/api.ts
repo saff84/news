@@ -228,6 +228,7 @@ export type IndicatorTelegramSection = {
     id: string;
     text: string | null;
     image_path: string | null;
+    image_paths?: string[];
     post_url: string;
     published_at: string | null;
     matched_keywords: string[];
@@ -243,6 +244,7 @@ export type IndicatorTelegramPostOut = {
   post_url: string;
   text: string | null;
   image_path: string | null;
+  image_paths: string[];
   published_at: string | null;
   matched_keywords: string[];
   created_at: string;
@@ -677,8 +679,14 @@ export const api = {
         const qs = sp.toString() ? `?${sp.toString()}` : "";
         return request<{ items: IndicatorTelegramPostOut[]; total: number }>(`/api/indicators/telegram/posts${qs}`, { method: "GET" }, accessToken);
       },
-      collectNow: (accessToken: string, params?: { reset_history?: boolean }) => {
-        const qs = params?.reset_history ? "?reset_history=true" : "";
+      collectNow: (
+        accessToken: string,
+        params?: { reset_history?: boolean; refresh_existing?: boolean },
+      ) => {
+        const sp = new URLSearchParams();
+        if (params?.reset_history) sp.set("reset_history", "true");
+        if (params?.refresh_existing) sp.set("refresh_existing", "true");
+        const qs = sp.toString() ? `?${sp.toString()}` : "";
         return request<{ status: string; channel?: string; fetched?: number; matched?: number; inserted?: number; updated?: number }>(
           `/api/indicators/telegram/collect-now${qs}`,
           { method: "POST" },
