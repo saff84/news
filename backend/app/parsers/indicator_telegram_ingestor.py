@@ -64,9 +64,9 @@ async def _download_first_image(client: TelegramClient, message: Any, *, usernam
     return None
 
 
-async def _ingest_async(db: Session) -> dict[str, Any]:
+async def _ingest_async(db: Session, *, force: bool = False) -> dict[str, Any]:
     cfg = get_indicator_telegram_config(db)
-    if not cfg.get("enabled"):
+    if not cfg.get("enabled") and not force:
         return {"status": "skipped", "reason": "disabled"}
     username = str(cfg.get("channel_username") or "").strip().lstrip("@")
     if not username:
@@ -182,5 +182,5 @@ async def _ingest_async(db: Session) -> dict[str, Any]:
         await client.disconnect()
 
 
-def ingest_indicator_telegram(db: Session) -> dict[str, Any]:
-    return asyncio.run(_ingest_async(db))
+def ingest_indicator_telegram(db: Session, *, force: bool = False) -> dict[str, Any]:
+    return asyncio.run(_ingest_async(db, force=force))

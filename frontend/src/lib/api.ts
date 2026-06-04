@@ -683,6 +683,20 @@ export const api = {
         ),
       deletePost: (accessToken: string, id: string) =>
         request<void>(`/api/indicators/telegram/posts/${id}`, { method: "DELETE" }, accessToken),
+      previewFilter: (
+        accessToken: string,
+        payload: {
+          text: string;
+          include_keywords: string[];
+          exclude_keywords: string[];
+          match_whole_words: boolean;
+        },
+      ) =>
+        request<{ keep: boolean; reason: string; matched_keywords: string[] }>(
+          "/api/indicators/telegram/preview-filter",
+          { method: "POST", body: JSON.stringify(payload) },
+          accessToken,
+        ),
     },
   },
   reportConfig: {

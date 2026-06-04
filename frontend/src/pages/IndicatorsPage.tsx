@@ -272,6 +272,9 @@ export function IndicatorsPage() {
   });
   const [tgConfigBusy, setTgConfigBusy] = useState(false);
   const [tgCollectBusy, setTgCollectBusy] = useState(false);
+  const [tgPreviewText, setTgPreviewText] = useState("");
+  const [tgPreviewResult, setTgPreviewResult] = useState<{ keep: boolean; reason: string; matched_keywords: string[] } | null>(null);
+  const [tgPreviewBusy, setTgPreviewBusy] = useState(false);
 
   const reload = useCallback(async () => {
     if (!accessToken) return;
@@ -370,6 +373,10 @@ export function IndicatorsPage() {
     setTgCollectBusy(true);
     try {
       const res = await api.indicators.telegramConfig.collectNow(accessToken);
+      if (res.status === "skipped") {
+        push({ variant: "error", title: "Telegram", description: "Сбор отключён в настройках (включите автосбор и сохраните)" });
+        return;
+      }
       push({
         variant: "success",
         title: "Telegram",
@@ -380,6 +387,36 @@ export function IndicatorsPage() {
       push({ variant: "error", title: "Telegram", description: e?.message || "Ошибка сбора" });
     } finally {
       setTgCollectBusy(false);
+    }
+  };
+
+  const previewTgFilter = async () => {
+    if (!accessToken || !tgPreviewText.trim()) return;
+    setTgPreviewBusy(true);
+    try {
+      const result = await api.indicators.telegramConfig.previewFilter(accessToken, {
+        text: tgPreviewText,
+        include_keywords: parseKeywords(tgForm.include_keywords),
+        exclude_keywords: parseKeywords(tgForm.exclude_keywords),
+        match_whole_words: tgForm.match_whole_words,
+      });
+      setTgPreviewResult(result);
+    } catch (e: any) {
+      push({ variant: "error", title: "Telegram", description: e?.message || "Не удалось проверить фильтр" });
+    } finally {
+      setTgPreviewBusy(false);
+    }
+  };
+
+  const deleteTgPost = async (id: string) => {
+    if (!accessToken) return;
+    if (!window.confirm("Удалить этот пост из базы? (в Telegram он останется)")) return;
+    try {
+      await api.indicators.telegramConfig.deletePost(accessToken, id);
+      setTgPosts((prev) => prev.filter((p) => p.id !== id));
+      push({ variant: "success", title: "Telegram", description: "Пост удалён" });
+    } catch (e: any) {
+      push({ variant: "error", title: "Telegram", description: e?.message || "Не удалось удалить" });
     }
   };
 
@@ -627,7 +664,7 @@ export function IndicatorsPage() {
                 type="button"
                 className="rounded bg-sky-700 px-3 py-2 text-sm text-white hover:bg-sky-800 disabled:opacity-50"
                 onClick={collectTgNow}
-                disabled={tgCollectBusy || !tgForm.enabled}
+                disabled={tgCollectBusy}
               >
                 {tgCollectBusy ? "Сбор…" : "Собрать из Telegram"}
               </button>
@@ -669,21 +706,51 @@ export function IndicatorsPage() {
               <span className="text-xs text-slate-600">Включить (хотя бы одно слово)</span>
               <textarea
                 className="mt-1 w-full rounded border px-3 py-2 text-sm"
-                rows={2}
-                placeholder="ввод жилья, многоквартирных"
+                rows={3}
+                placeholder={"росстат\nмногоквартир\nмногоквартирного"}
                 value={tgForm.include_keywords}
                 onChange={(e) => setTgForm((f) => ({ ...f, include_keywords: e.target.value }))}
               />
+              <p className="mt-1 text-xs text-slate-500">Каждый ключ — с новой строки. «Целые слова» лучше не включать.</p>
             </label>
             <label className="block md:col-span-2">
               <span className="text-xs text-slate-600">Исключить</span>
               <textarea
                 className="mt-1 w-full rounded border px-3 py-2 text-sm"
                 rows={2}
+                placeholder="слова из лишних постов — добавьте сюда"
                 value={tgForm.exclude_keywords}
                 onChange={(e) => setTgForm((f) => ({ ...f, exclude_keywords: e.target.value }))}
               />
+              <p className="mt-1 text-xs text-slate-500">Если ключ совпал — пост не сохранится. Смотрите синие метки на карточках лишних постов.</p>
             </label>
+            <div className="md:col-span-2 rounded-lg border border-dashed border-slate-300 p-3">
+              <p className="text-sm font-medium text-slate-800">Проверка фильтра</p>
+              <p className="mt-1 text-xs text-slate-600">Вставьте текст поста из Telegram — увидите, пройдёт ли он текущие ключи.</p>
+              <textarea
+                className="mt-2 w-full rounded border px-3 py-2 text-sm"
+                rows={3}
+                value={tgPreviewText}
+                onChange={(e) => setTgPreviewText(e.target.value)}
+                placeholder="Скопируйте подпись к посту из канала @erzrf"
+              />
+              <div className="mt-2 flex flex-wrap items-center gap-2">
+                <button
+                  type="button"
+                  className="rounded border bg-white px-3 py-1.5 text-sm hover:bg-slate-50 disabled:opacity-50"
+                  onClick={previewTgFilter}
+                  disabled={tgPreviewBusy || !tgPreviewText.trim()}
+                >
+                  {tgPreviewBusy ? "Проверка…" : "Проверить"}
+                </button>
+                {tgPreviewResult ? (
+                  <span className={`text-sm ${tgPreviewResult.keep ? "text-emerald-700" : "text-red-700"}`}>
+                    {tgPreviewResult.keep ? "Пройдёт" : "Не пройдёт"}
+                    {tgPreviewResult.matched_keywords.length ? ` · ключи: ${tgPreviewResult.matched_keywords.join(", ")}` : ""}
+                  </span>
+                ) : null}
+              </div>
+            </div>
             <label className="flex items-center gap-2 md:col-span-2">
               <input
                 type="checkbox"
@@ -782,6 +849,16 @@ export function IndicatorsPage() {
                   <a href={p.post_url} target="_blank" rel="noopener noreferrer" className="text-xs text-sky-700 underline">
                     Открыть в Telegram
                   </a>
+                  {user?.role === "Admin" ? (
+                    <button
+                      type="button"
+                      className="ml-3 inline-flex items-center gap-1 text-xs text-red-700 hover:underline"
+                      onClick={() => deleteTgPost(p.id)}
+                    >
+                      <Trash2 className="h-3.5 w-3.5" />
+                      Удалить
+                    </button>
+                  ) : null}
                 </div>
               </article>
             ))

@@ -13,6 +13,7 @@ from app.db import get_db
 from app.models.auth import Role, User
 from app.models.domain import IndicatorTelegramPost
 from app.parsers.indicator_telegram_ingestor import ingest_indicator_telegram
+from app.parsers.keyword_filter import explain_filter
 from app.services.indicator_telegram_config import (
     _default_config,
     get_indicator_telegram_config,
@@ -72,6 +73,19 @@ class IndicatorTelegramPostOut(BaseModel):
     created_at: str
 
 
+class IndicatorTelegramFilterPreviewIn(BaseModel):
+    text: str = Field(min_length=1, max_length=20000)
+    include_keywords: list[str] = Field(default_factory=list)
+    exclude_keywords: list[str] = Field(default_factory=list)
+    match_whole_words: bool = False
+
+
+class IndicatorTelegramFilterPreviewOut(BaseModel):
+    keep: bool
+    reason: str
+    matched_keywords: list[str]
+
+
 def _config_out(cfg: dict) -> IndicatorTelegramConfigOut:
     merged = {**_default_config(), **cfg}
     groups_raw = merged.get("report_groups") or default_report_groups()
@@ -125,6 +139,23 @@ def update_config(
     return _config_out(get_indicator_telegram_config(db))
 
 
+@router.post("/preview-filter", response_model=IndicatorTelegramFilterPreviewOut)
+def preview_filter(
+    payload: IndicatorTelegramFilterPreviewIn,
+    user: User = Depends(require_role(Role.ADMIN, Role.ANALYST)),
+) -> IndicatorTelegramFilterPreviewOut:
+    """Проверка: пройдёт ли текст поста текущие include/exclude."""
+    result = explain_filter(
+        payload.text,
+        {
+            "include_keywords": payload.include_keywords,
+            "exclude_keywords": payload.exclude_keywords,
+            "match_whole_words": payload.match_whole_words,
+        },
+    )
+    return IndicatorTelegramFilterPreviewOut(**result)
+
+
 @router.get("/posts")
 def list_posts(
     limit: int = Query(default=50, ge=1, le=200),
@@ -163,7 +194,7 @@ def collect_now(
     user: User = Depends(require_role(Role.ADMIN)),
 ) -> dict:
     try:
-        return ingest_indicator_telegram(db)
+        return ingest_indicator_telegram(db, force=True)
     except Exception as e:
         raise HTTPException(
             status_code=status.HTTP_502_BAD_GATEWAY,
