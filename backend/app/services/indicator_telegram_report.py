@@ -10,7 +10,7 @@ from typing import Any
 from sqlalchemy import and_, or_
 from sqlalchemy.orm import Session
 
-from app.core.settings import get_settings
+from app.core.settings import settings
 from app.models.domain import IndicatorTelegramPost
 from app.services.indicator_telegram_config import get_indicator_telegram_config
 
@@ -161,7 +161,7 @@ def image_path_to_filesystem(image_path: str | None) -> Path | None:
     name = image_path.rstrip("/").split("/")[-1]
     if not name:
         return None
-    p = Path(get_settings().storage_dir) / "indicator_tg" / name
+    p = Path(settings.storage_dir) / "indicator_tg" / name
     return p if p.is_file() else None
 
 
