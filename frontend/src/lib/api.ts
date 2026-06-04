@@ -212,6 +212,7 @@ export type IndicatorTelegramConfigOut = {
   exclude_keywords: string[];
   match_whole_words: boolean;
   backfill_limit: number;
+  backfill_until_date: string | null;
   include_in_report: boolean;
   ai_in_report: boolean;
   report_groups: IndicatorTelegramReportGroup[];
@@ -662,6 +663,7 @@ export const api = {
           exclude_keywords: string[];
           match_whole_words: boolean;
           backfill_limit: number;
+          backfill_until_date: string | null;
           include_in_report: boolean;
           ai_in_report: boolean;
           report_groups: IndicatorTelegramReportGroup[];
@@ -675,12 +677,14 @@ export const api = {
         const qs = sp.toString() ? `?${sp.toString()}` : "";
         return request<{ items: IndicatorTelegramPostOut[]; total: number }>(`/api/indicators/telegram/posts${qs}`, { method: "GET" }, accessToken);
       },
-      collectNow: (accessToken: string) =>
-        request<{ status: string; channel?: string; fetched?: number; matched?: number; inserted?: number; updated?: number }>(
-          "/api/indicators/telegram/collect-now",
+      collectNow: (accessToken: string, params?: { reset_history?: boolean }) => {
+        const qs = params?.reset_history ? "?reset_history=true" : "";
+        return request<{ status: string; channel?: string; fetched?: number; matched?: number; inserted?: number; updated?: number }>(
+          `/api/indicators/telegram/collect-now${qs}`,
           { method: "POST" },
           accessToken,
-        ),
+        );
+      },
       deletePost: (accessToken: string, id: string) =>
         request<void>(`/api/indicators/telegram/posts/${id}`, { method: "DELETE" }, accessToken),
       previewFilter: (

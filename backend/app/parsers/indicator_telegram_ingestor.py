@@ -35,6 +35,39 @@ def _ensure_tg_config(cfg: dict) -> None:
         )
 
 
+def _parse_until_date(raw: object) -> dt.datetime | None:
+    if not raw or not str(raw).strip():
+        return None
+    s = str(raw).strip()[:10]
+    try:
+        d = dt.date.fromisoformat(s)
+        return dt.datetime.combine(d, dt.time.max, tzinfo=dt.timezone.utc)
+    except ValueError:
+        return None
+
+
+async def _fetch_channel_messages(
+    client: TelegramClient,
+    entity: Any,
+    *,
+    backfill: int,
+    last_message_id: int,
+    reset_history: bool,
+    until_date: dt.datetime | None,
+) -> list[Any]:
+    """reset_history / нет курсора — глубокий backfill; иначе только новые + хвост канала."""
+    if reset_history or not last_message_id:
+        kwargs: dict[str, Any] = {"limit": backfill}
+        if until_date:
+            kwargs["offset_date"] = until_date
+        msgs = await client.get_messages(entity, **kwargs)
+        return [m for m in (msgs or []) if m and m.id]
+
+    # Только сообщения новее курсора — уже сохранённые в БД не перекачиваем.
+    msgs = await client.get_messages(entity, min_id=last_message_id, limit=backfill)
+    return [m for m in (msgs or []) if m and m.id]
+
+
 def _filter_settings(cfg: dict) -> dict:
     return {
         "include_keywords": parse_keyword_list(cfg.get("include_keywords")),
@@ -64,7 +97,7 @@ async def _download_first_image(client: TelegramClient, message: Any, *, usernam
     return None
 
 
-async def _ingest_async(db: Session, *, force: bool = False) -> dict[str, Any]:
+async def _ingest_async(db: Session, *, force: bool = False, reset_history: bool = False) -> dict[str, Any]:
     cfg = get_indicator_telegram_config(db)
     if not cfg.get("enabled") and not force:
         return {"status": "skipped", "reason": "disabled"}
@@ -77,7 +110,8 @@ async def _ingest_async(db: Session, *, force: bool = False) -> dict[str, Any]:
 
     filter_cfg = _filter_settings(cfg)
     backfill = int(cfg.get("backfill_limit") or 100)
-    last_message_id = int(cfg.get("last_message_id") or 0)
+    last_message_id = 0 if reset_history else int(cfg.get("last_message_id") or 0)
+    until_date = _parse_until_date(cfg.get("backfill_until_date"))
 
     session_string = tg_cfg.get("session_string") or ""
     session: str | StringSession = StringSession(session_string) if session_string else f"{settings.telegram_session_dir}/newsint_main"
@@ -95,16 +129,14 @@ async def _ingest_async(db: Session, *, force: bool = False) -> dict[str, Any]:
             raise RuntimeError("Telegram session is not authorized")
 
         entity = await client.get_entity(username)
-        if last_message_id:
-            msgs = await client.get_messages(entity, min_id=last_message_id, limit=backfill)
-            tail = await client.get_messages(entity, limit=min(30, backfill))
-            by_id = {m.id: m for m in msgs if m and m.id}
-            for m in tail:
-                if m and m.id:
-                    by_id[m.id] = m
-            msgs = list(by_id.values())
-        else:
-            msgs = await client.get_messages(entity, limit=backfill)
+        msgs = await _fetch_channel_messages(
+            client,
+            entity,
+            backfill=backfill,
+            last_message_id=last_message_id,
+            reset_history=reset_history,
+            until_date=until_date,
+        )
 
         msgs.sort(key=lambda m: m.id or 0)
 
@@ -147,15 +179,16 @@ async def _ingest_async(db: Session, *, force: bool = False) -> dict[str, Any]:
                 .one_or_none()
             )
             if existing:
-                existing.post_url = post_url
-                existing.text = values["text"]
-                existing.image_path = image_path or existing.image_path
-                existing.published_at = published_at
-                existing.matched_keywords = values["matched_keywords"]
-                updated += 1
-            else:
-                db.add(IndicatorTelegramPost(**values))
-                inserted += 1
+                if reset_history:
+                    existing.post_url = post_url
+                    existing.text = values["text"]
+                    existing.image_path = image_path or existing.image_path
+                    existing.published_at = published_at
+                    existing.matched_keywords = values["matched_keywords"]
+                    updated += 1
+                continue
+            db.add(IndicatorTelegramPost(**values))
+            inserted += 1
 
         save_indicator_telegram_config(
             db,
@@ -172,6 +205,8 @@ async def _ingest_async(db: Session, *, force: bool = False) -> dict[str, Any]:
             "inserted": inserted,
             "updated": updated,
             "last_message_id": max_id,
+            "reset_history": reset_history,
+            "backfill_until_date": cfg.get("backfill_until_date"),
         }
     except FloodWaitError as fw:
         save_indicator_telegram_config(db, last_error=f"FloodWait {fw.seconds}s")
@@ -182,5 +217,5 @@ async def _ingest_async(db: Session, *, force: bool = False) -> dict[str, Any]:
         await client.disconnect()
 
 
-def ingest_indicator_telegram(db: Session, *, force: bool = False) -> dict[str, Any]:
-    return asyncio.run(_ingest_async(db, force=force))
+def ingest_indicator_telegram(db: Session, *, force: bool = False, reset_history: bool = False) -> dict[str, Any]:
+    return asyncio.run(_ingest_async(db, force=force, reset_history=reset_history))

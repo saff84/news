@@ -36,6 +36,7 @@ class IndicatorTelegramConfigOut(BaseModel):
     exclude_keywords: list[str]
     match_whole_words: bool
     backfill_limit: int
+    backfill_until_date: str | None
     include_in_report: bool
     ai_in_report: bool
     report_groups: list[IndicatorTelegramReportGroupOut]
@@ -56,6 +57,10 @@ class IndicatorTelegramConfigUpdateIn(BaseModel):
     exclude_keywords: list[str] | None = None
     match_whole_words: bool | None = None
     backfill_limit: int | None = Field(default=None, ge=10, le=500)
+    backfill_until_date: str | None = Field(
+        default=None,
+        description="YYYY-MM-DD — при сборе истории: посты старше этой даты (включая май)",
+    )
     include_in_report: bool | None = None
     ai_in_report: bool | None = None
     report_groups: list[IndicatorTelegramReportGroupIn] | None = None
@@ -109,6 +114,7 @@ def _config_out(cfg: dict) -> IndicatorTelegramConfigOut:
         exclude_keywords=list(merged.get("exclude_keywords") or []),
         match_whole_words=bool(merged.get("match_whole_words")),
         backfill_limit=int(merged.get("backfill_limit") or 100),
+        backfill_until_date=merged.get("backfill_until_date"),
         include_in_report=bool(merged.get("include_in_report", True)),
         ai_in_report=bool(merged.get("ai_in_report", False)),
         report_groups=groups,
@@ -190,11 +196,15 @@ def list_posts(
 
 @router.post("/collect-now")
 def collect_now(
+    reset_history: bool = Query(
+        False,
+        description="Сбросить курсор и пройти backfill_limit сообщений из истории канала",
+    ),
     db: Session = Depends(get_db),
     user: User = Depends(require_role(Role.ADMIN)),
 ) -> dict:
     try:
-        return ingest_indicator_telegram(db, force=True)
+        return ingest_indicator_telegram(db, force=True, reset_history=reset_history)
     except Exception as e:
         raise HTTPException(
             status_code=status.HTTP_502_BAD_GATEWAY,

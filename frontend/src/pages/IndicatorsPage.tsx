@@ -263,6 +263,7 @@ export function IndicatorsPage() {
     exclude_keywords: "",
     match_whole_words: false,
     backfill_limit: 100,
+    backfill_until_date: "",
     include_in_report: true,
     ai_in_report: false,
     report_groups: [
@@ -304,6 +305,7 @@ export function IndicatorsPage() {
         exclude_keywords: keywordsToText(tgCfg.exclude_keywords),
         match_whole_words: tgCfg.match_whole_words,
         backfill_limit: tgCfg.backfill_limit,
+        backfill_until_date: tgCfg.backfill_until_date || "",
         include_in_report: tgCfg.include_in_report ?? true,
         ai_in_report: tgCfg.ai_in_report ?? false,
         report_groups: (tgCfg.report_groups?.length
@@ -355,6 +357,7 @@ export function IndicatorsPage() {
         exclude_keywords: parseKeywords(tgForm.exclude_keywords),
         match_whole_words: tgForm.match_whole_words,
         backfill_limit: tgForm.backfill_limit,
+        backfill_until_date: tgForm.backfill_until_date.trim() || null,
         include_in_report: tgForm.include_in_report,
         ai_in_report: tgForm.ai_in_report,
         report_groups,
@@ -368,11 +371,11 @@ export function IndicatorsPage() {
     }
   };
 
-  const collectTgNow = async () => {
+  const collectTgNow = async (resetHistory: boolean) => {
     if (!accessToken) return;
     setTgCollectBusy(true);
     try {
-      const res = await api.indicators.telegramConfig.collectNow(accessToken);
+      const res = await api.indicators.telegramConfig.collectNow(accessToken, { reset_history: resetHistory });
       if (res.status === "skipped") {
         push({ variant: "error", title: "Telegram", description: "Сбор отключён в настройках (включите автосбор и сохраните)" });
         return;
@@ -643,6 +646,10 @@ export function IndicatorsPage() {
             <p className="mt-1 text-sm text-slate-600">
               Посты из канала по ключевым словам: первая картинка и текст. Нужна авторизация в разделе «Telegram-парсер».
             </p>
+            <p className="mt-1 text-xs text-slate-500">
+              1) «Собрать историю» — один раз найти посты (май и др.). 2) Удалить лишнее. 3) Дальше только «Новые посты» — уже
+              сохранённые не перекачиваются.
+            </p>
             {tgConfig?.last_fetch_at ? (
               <p className="mt-1 text-xs text-slate-500">
                 Последний сбор: {formatDateTime(tgConfig.last_fetch_at)}
@@ -663,10 +670,19 @@ export function IndicatorsPage() {
               <button
                 type="button"
                 className="rounded bg-sky-700 px-3 py-2 text-sm text-white hover:bg-sky-800 disabled:opacity-50"
-                onClick={collectTgNow}
+                onClick={() => collectTgNow(false)}
                 disabled={tgCollectBusy}
               >
-                {tgCollectBusy ? "Сбор…" : "Собрать из Telegram"}
+                {tgCollectBusy ? "Сбор…" : "Новые посты"}
+              </button>
+              <button
+                type="button"
+                className="rounded border border-sky-700 bg-white px-3 py-2 text-sm text-sky-800 hover:bg-sky-50 disabled:opacity-50"
+                onClick={() => collectTgNow(true)}
+                disabled={tgCollectBusy}
+                title="Сбросить курсор и пройти лимит сообщений из истории (для постов за май и раньше)"
+              >
+                {tgCollectBusy ? "Сбор…" : "Собрать историю"}
               </button>
             </div>
           ) : null}
@@ -701,6 +717,19 @@ export function IndicatorsPage() {
                 value={tgForm.backfill_limit}
                 onChange={(e) => setTgForm((f) => ({ ...f, backfill_limit: Number(e.target.value) || 100 }))}
               />
+              <p className="mt-1 text-xs text-slate-500">Для мая: 300–500 + «Собрать историю».</p>
+            </label>
+            <label className="block">
+              <span className="text-xs text-slate-600">История до даты (YYYY-MM-DD)</span>
+              <input
+                type="date"
+                className="mt-1 w-full rounded border px-3 py-2 text-sm"
+                value={tgForm.backfill_until_date}
+                onChange={(e) => setTgForm((f) => ({ ...f, backfill_until_date: e.target.value }))}
+              />
+              <p className="mt-1 text-xs text-slate-500">
+                Напр. 2026-06-01 — подтянет посты до 1 июня (включая 15 мая). Только с «Собрать историю».
+              </p>
             </label>
             <label className="block md:col-span-2">
               <span className="text-xs text-slate-600">Включить (хотя бы одно слово)</span>

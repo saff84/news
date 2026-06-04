@@ -19,6 +19,7 @@ def _default_config() -> dict[str, Any]:
         "exclude_keywords": [],
         "match_whole_words": False,
         "backfill_limit": 100,
+        "backfill_until_date": None,
         "include_in_report": True,
         "ai_in_report": False,
         "report_groups": default_report_groups(),
