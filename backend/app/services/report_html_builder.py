@@ -10,7 +10,7 @@ from typing import Any
 from app.services.period_sort import period_sort_key
 from app.services.report_markup import markdown_links_to_html
 from app.services.indicator_telegram_report import indicator_telegram_sections_to_html
-from app.services.report_section_render import section_dict_to_html_fragment
+from app.services.report_section_render import render_section_inner_html, section_dict_to_html_fragment
 
 
 def _json(obj: Any) -> str:
@@ -40,16 +40,10 @@ def _cards_for_summaries_mixed(
     keys = sorted(set((entries or {}).keys()) | set((json_entries or {}).keys()))
     parts: list[str] = []
     for name in keys:
-        text = ((entries or {}).get(name) or "").strip()
+        text = (entries or {}).get(name) or ""
         raw_j = (json_entries or {}).get(name)
         pl = raw_j if isinstance(raw_j, dict) else None
-        inner = ""
-        if pl:
-            frag = section_dict_to_html_fragment(pl)
-            if frag.strip():
-                inner = f"<div class='summary rich structured'>{frag}</div>"
-        if not inner and text:
-            inner = f"<div class='summary rich'>{markdown_links_to_html(text)}</div>"
+        inner = render_section_inner_html(text=text, payload=pl)
         if not inner:
             continue
         parts.append(f"<section class='card'><h3>{escape(name)}</h3>{inner}</section>")
@@ -59,14 +53,7 @@ def _cards_for_summaries_mixed(
 
 
 def _section_rich(title: str, text: str | None, payload: dict[str, Any] | None) -> str:
-    pl = payload if isinstance(payload, dict) else None
-    inner = ""
-    if pl:
-        frag = section_dict_to_html_fragment(pl)
-        if frag.strip():
-            inner = f"<div class='summary rich structured'>{frag}</div>"
-    if not inner and text and str(text).strip():
-        inner = f"<div class='summary rich'>{markdown_links_to_html(text)}</div>"
+    inner = render_section_inner_html(text=text, payload=payload if isinstance(payload, dict) else None)
     if not inner:
         return ""
     return f'<section class="card"><h3>{escape(title)}</h3>{inner}</section>'

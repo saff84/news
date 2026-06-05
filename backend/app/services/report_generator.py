@@ -39,7 +39,7 @@ from app.services.ai_runtime import (
     runtime_from_config,
 )
 from app.services.report_config import get_report_config
-from app.services.report_section_render import parse_report_section_json, section_dict_to_markdown
+from app.services.report_section_render import section_dict_to_markdown, try_parse_report_section
 from app.services.report_section_settings import (
     REGION_UNASSIGNED_LABEL,
     ReportSectionSettings,
@@ -56,7 +56,7 @@ _AI_LINK_INSTRUCTION = (
 )
 
 # Максимум новостей за период в отчёте (самые свежие по published_at).
-MAX_NEWS_ITEMS_PER_REPORT = 2000
+MAX_NEWS_ITEMS_PER_REPORT = 5000
 
 
 def _serialize_news_for_ai(
@@ -89,7 +89,7 @@ def _serialize_news_for_ai(
         link = f"[{title}]({url})" if url else title
         lines.append(f"- {prefix}{pub} | {link}")
         if n.snippet:
-            sn = n.snippet[:450] + ("…" if len(n.snippet) > 450 else "")
+            sn = n.snippet[:700] + ("…" if len(n.snippet) > 700 else "")
             lines.append(f"  {sn}")
     return "\n".join(lines) if lines else "(нет данных за период)"
 
@@ -116,7 +116,7 @@ def _fetch_clusters_for_report(db: Session, news_ids: frozenset) -> list[NewsIte
         db.query(NewsItemCluster)
         .filter(NewsItemCluster.primary_item_id.in_(news_ids))
         .order_by(NewsItemCluster.created_at.desc())
-        .limit(120)
+        .limit(250)
         .all()
     )
 
@@ -336,7 +336,7 @@ def fetch_report_data(
                 ParsedIndicator.created_at <= dt_to,
             )
             .order_by(ParsedIndicator.indicator_name.asc(), ParsedIndicator.created_at.desc())
-            .limit(500)
+            .limit(1000)
             .all()
         )
 
@@ -561,16 +561,12 @@ def _process_ai_report_section(
         retry_base_seconds=retry_base_seconds,
         log_label=log_label,
     )
-    try:
-        d = parse_report_section_json(raw)
+    d = try_parse_report_section(raw)
+    if d:
         md = section_dict_to_markdown(d)
-        if md.strip():
+        if md.strip() or d.get("headline") or d.get("lead") or d.get("paragraphs") or d.get("bullets") or d.get("closing"):
             return md, d
-        if d.get("headline") or d.get("lead") or d.get("paragraphs") or d.get("bullets") or d.get("closing"):
-            return md, d
-        return raw, None
-    except Exception:
-        return raw, None
+    return raw, None
 
 
 def _parse_report_month(s: str | None) -> tuple[date, date, date | None] | None:

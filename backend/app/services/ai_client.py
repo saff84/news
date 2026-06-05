@@ -12,9 +12,10 @@ log = logging.getLogger("services.ai_client")
 
 OPENROUTER_URL = "https://openrouter.ai/api/v1/chat/completions"
 ROUTERAI_URL = "https://routerai.ru/api/v1/chat/completions"
-MAX_CONTENT_LENGTH = 100_000  # truncate data if too long
+MAX_CONTENT_LENGTH = 250_000  # truncate data if too long
 MIN_RESPONSE_LENGTH = 1
-MAX_RESPONSE_LENGTH = 100_000
+MAX_RESPONSE_LENGTH = 200_000
+AI_MAX_OUTPUT_TOKENS = 8192
 
 
 class AIValidationError(Exception):
@@ -164,7 +165,7 @@ def call_provider(
     payload = {
         "model": model.strip(),
         "messages": [{"role": "user", "content": user_content}],
-        "max_tokens": 4096,
+        "max_tokens": AI_MAX_OUTPUT_TOKENS,
         "temperature": 0.3,
     }
 

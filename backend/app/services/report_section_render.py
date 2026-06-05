@@ -14,6 +14,16 @@ from app.schemas.report_sections import ReportSectionPayload
 from app.services.report_markup import markdown_links_to_html, markdown_links_to_reportlab_markup
 
 _FENCE = re.compile(r"^```(?:json)?\s*", re.I)
+_EMOJI_RE = re.compile(
+    r"[\U0001F300-\U0001FAFF\U00002600-\U000027BF\U0000FE00-\U0000FEFF]+",
+    flags=re.UNICODE,
+)
+
+
+def strip_report_emojis(text: str | None) -> str:
+    if not text:
+        return ""
+    return _EMOJI_RE.sub("", text).strip()
 
 
 def strip_json_fences(raw: str) -> str:
@@ -28,17 +38,74 @@ def strip_json_fences(raw: str) -> str:
     return s
 
 
-def parse_report_section_json(raw: str) -> dict[str, Any]:
-    s = strip_json_fences(raw)
-    data = json.loads(s)
-    if not isinstance(data, dict):
-        raise ValueError("JSON root must be object")
-    payload = ReportSectionPayload.model_validate(data)
+def _normalize_section_data(data: dict[str, Any]) -> dict[str, Any]:
+    out = dict(data)
+    bullets = out.get("bullets")
+    if isinstance(bullets, list):
+        norm: list[dict[str, Any]] = []
+        for b in bullets:
+            if isinstance(b, str):
+                t = strip_report_emojis(b)
+                if t:
+                    norm.append({"text": t, "citations": []})
+            elif isinstance(b, dict):
+                t = strip_report_emojis(str(b.get("text") or ""))
+                if not t:
+                    continue
+                cites = b.get("citations") if isinstance(b.get("citations"), list) else []
+                norm.append({"text": t, "citations": cites})
+        out["bullets"] = norm
+    for key in ("headline", "lead", "closing"):
+        if out.get(key) is not None:
+            out[key] = strip_report_emojis(str(out[key])) or None
+    if isinstance(out.get("paragraphs"), list):
+        out["paragraphs"] = [strip_report_emojis(str(p)) for p in out["paragraphs"] if strip_report_emojis(str(p))]
+    return out
+
+
+def _validate_section_dict(data: dict[str, Any]) -> dict[str, Any]:
+    payload = ReportSectionPayload.model_validate(_normalize_section_data(data))
     return payload.model_dump()
+
+
+def try_parse_report_section(raw: str | None) -> dict[str, Any] | None:
+    """Разбор JSON секции: ограждения ```json, обрезки, bullets-строки."""
+    if not raw or not str(raw).strip():
+        return None
+    candidates: list[str] = []
+    s = str(raw).strip()
+    candidates.append(s)
+    fenced = strip_json_fences(s)
+    if fenced not in candidates:
+        candidates.append(fenced)
+    if "{" in fenced and "}" in fenced:
+        inner = fenced[fenced.find("{") : fenced.rfind("}") + 1]
+        if inner not in candidates:
+            candidates.append(inner)
+    for cand in candidates:
+        try:
+            data = json.loads(cand)
+            if isinstance(data, dict):
+                return _validate_section_dict(data)
+        except Exception:
+            continue
+    return None
+
+
+def parse_report_section_json(raw: str) -> dict[str, Any]:
+    parsed = try_parse_report_section(raw)
+    if parsed is None:
+        raise ValueError("Invalid report section JSON")
+    return parsed
+
+
+def sanitize_section_dict(d: dict[str, Any]) -> dict[str, Any]:
+    return _normalize_section_data(d)
 
 
 def section_dict_to_markdown(d: dict[str, Any]) -> str:
     """Плоское текстовое представление (fallback для API и старых клиентов)."""
+    d = sanitize_section_dict(d)
     parts: list[str] = []
     if d.get("headline"):
         parts.append(str(d["headline"]))
@@ -50,7 +117,9 @@ def section_dict_to_markdown(d: dict[str, Any]) -> str:
     for b in d.get("bullets") or []:
         if not isinstance(b, dict):
             continue
-        t = (b.get("text") or "").strip()
+        t = str(b.get("text") or "").strip()
+        if not t:
+            continue
         cites = b.get("citations") or []
         link_bits: list[str] = []
         for c in cites:
@@ -68,6 +137,7 @@ def section_dict_to_markdown(d: dict[str, Any]) -> str:
 
 
 def section_dict_to_html_fragment(d: dict[str, Any]) -> str:
+    d = sanitize_section_dict(d)
     blocks: list[str] = []
     if d.get("headline"):
         blocks.append(f"<h4 class='sec-headline'>{escape(str(d['headline']))}</h4>")
@@ -82,7 +152,9 @@ def section_dict_to_html_fragment(d: dict[str, Any]) -> str:
         for b in bullets:
             if not isinstance(b, dict):
                 continue
-            t = escape(str(b.get("text") or ""))
+            t = escape(strip_report_emojis(str(b.get("text") or "")))
+            if not t:
+                continue
             cites = b.get("citations") or []
             cite_html: list[str] = []
             for c in cites:
@@ -101,6 +173,28 @@ def section_dict_to_html_fragment(d: dict[str, Any]) -> str:
     return "".join(blocks)
 
 
+def render_section_inner_html(*, text: str | None, payload: dict[str, Any] | None) -> str:
+    """HTML блока секции: JSON → структура, иначе markdown; без сырого ```json в отчёте."""
+    pl = payload if isinstance(payload, dict) else None
+    if not pl and text:
+        pl = try_parse_report_section(text)
+    if pl:
+        frag = section_dict_to_html_fragment(pl).strip()
+        if frag:
+            return f"<div class='summary rich structured'>{frag}</div>"
+    clean = strip_report_emojis(strip_json_fences(text or ""))
+    if clean.strip().startswith("{"):
+        pl2 = try_parse_report_section(clean)
+        if pl2:
+            frag = section_dict_to_html_fragment(pl2).strip()
+            if frag:
+                return f"<div class='summary rich structured'>{frag}</div>"
+        return ""
+    if clean.strip():
+        return f"<div class='summary rich'>{markdown_links_to_html(clean)}</div>"
+    return ""
+
+
 def append_section_json_to_pdf_story(
     story: list,
     *,
@@ -115,7 +209,7 @@ def append_section_json_to_pdf_story(
 
     story.append(Paragraph(f"<b>{escape(section_title)}</b>", h3_style))
     if payload:
-        d = payload
+        d = sanitize_section_dict(payload)
         if d.get("headline"):
             story.append(Paragraph(f"<b>{escape(str(d['headline']))}</b>", normal_style))
         if d.get("lead"):
