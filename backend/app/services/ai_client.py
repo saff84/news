@@ -12,7 +12,7 @@ log = logging.getLogger("services.ai_client")
 
 OPENROUTER_URL = "https://openrouter.ai/api/v1/chat/completions"
 ROUTERAI_URL = "https://routerai.ru/api/v1/chat/completions"
-MAX_CONTENT_LENGTH = 250_000  # truncate data if too long
+MAX_CONTENT_LENGTH = 90_000  # жёсткий потолок «Данные»; укладываемся в 128k tokens с промптом
 MIN_RESPONSE_LENGTH = 1
 MAX_RESPONSE_LENGTH = 200_000
 AI_MAX_OUTPUT_TOKENS = 8192

@@ -99,6 +99,41 @@ def parse_report_section_json(raw: str) -> dict[str, Any]:
     return parsed
 
 
+def merge_report_section_payloads(sections: list[dict[str, Any]]) -> dict[str, Any]:
+    """Объединить несколько JSON-секций (батчи общих новостей) в один блок отчёта."""
+    clean = [sanitize_section_dict(s) for s in sections if isinstance(s, dict) and s]
+    if not clean:
+        return {}
+    if len(clean) == 1:
+        return clean[0]
+
+    merged: dict[str, Any] = {
+        "headline": clean[0].get("headline") or "Общие новости",
+        "lead": clean[0].get("lead"),
+        "paragraphs": [],
+        "bullets": [],
+        "closing": clean[-1].get("closing"),
+    }
+    seen_bullets: set[str] = set()
+    for sec in clean:
+        for p in sec.get("paragraphs") or []:
+            pt = str(p).strip()
+            if pt and pt not in merged["paragraphs"]:
+                merged["paragraphs"].append(pt)
+        for b in sec.get("bullets") or []:
+            if not isinstance(b, dict):
+                continue
+            t = str(b.get("text") or "").strip()
+            if not t:
+                continue
+            key = t.lower()[:160]
+            if key in seen_bullets:
+                continue
+            seen_bullets.add(key)
+            merged["bullets"].append(b)
+    return merged
+
+
 def sanitize_section_dict(d: dict[str, Any]) -> dict[str, Any]:
     return _normalize_section_data(d)
 

@@ -39,7 +39,11 @@ from app.services.ai_runtime import (
     runtime_from_config,
 )
 from app.services.report_config import get_report_config
-from app.services.report_section_render import section_dict_to_markdown, try_parse_report_section
+from app.services.report_section_render import (
+    merge_report_section_payloads,
+    section_dict_to_markdown,
+    try_parse_report_section,
+)
 from app.services.report_section_settings import (
     REGION_UNASSIGNED_LABEL,
     ReportSectionSettings,
@@ -57,6 +61,114 @@ _AI_LINK_INSTRUCTION = (
 
 # Максимум новостей за период в отчёте (самые свежие по published_at).
 MAX_NEWS_ITEMS_PER_REPORT = 5000
+# Лимит блока «Данные» для ИИ (~40–55k tokens ru, запас под промпт и ответ в 128k context).
+AI_NEWS_DATA_BUDGET_CHARS = 72_000
+
+
+def _news_published_sort_key(n: Any) -> datetime:
+    return n.published_at or datetime.min.replace(tzinfo=timezone.utc)
+
+
+def _news_item_lines(
+    n: Any,
+    *,
+    competitor_names: dict[str, str] | None = None,
+    snippet_chars: int,
+) -> list[str]:
+    pub = n.published_at.strftime("%Y-%m-%d") if n.published_at else "—"
+    title = (n.title or "Без заголовка").replace("\n", " ").strip()
+    url = (n.url or "").strip()
+    prefix = ""
+    if competitor_names:
+        cid = n.competitor_id
+        if cid and str(cid) in competitor_names:
+            prefix = f"[{competitor_names[str(cid)]}] "
+        elif n.competitor_mentions:
+            names = [competitor_names.get(str(m), str(m)) for m in n.competitor_mentions]
+            prefix = f"[{', '.join(names)}] " if names else ""
+    link = f"[{title}]({url})" if url else title
+    lines = [f"- {prefix}{pub} | {link}"]
+    if snippet_chars > 0 and n.snippet:
+        sn = n.snippet[:snippet_chars] + ("…" if len(n.snippet) > snippet_chars else "")
+        lines.append(f"  {sn}")
+    return lines
+
+
+def _serialize_news_batch(
+    batch: list,
+    *,
+    competitor_names: dict[str, str] | None = None,
+    section_subject: str | None = None,
+    snippet_chars: int = 400,
+    header_lines: list[str] | None = None,
+) -> str:
+    lines: list[str] = list(header_lines or [])
+    if section_subject:
+        if lines:
+            lines.append("")
+        lines.extend(
+            [
+                f"Заголовок раздела отчёта: «{section_subject}». "
+                f"Саммари должно относиться только к этой компании/сущности. "
+                f"Не описывай других участников рынка, даже если они упомянуты в тексте новости.",
+                "",
+            ]
+        )
+    elif lines:
+        lines.append("")
+    for n in batch:
+        lines.extend(_news_item_lines(n, competitor_names=competitor_names, snippet_chars=snippet_chars))
+    return "\n".join(lines) if lines else "(нет данных за период)"
+
+
+def _general_news_batch_header(*, total: int, batch_index: int, batch_total: int) -> list[str]:
+    if batch_total <= 1:
+        return []
+    lines = [
+        f"Часть {batch_index} из {batch_total}. Всего общих новостей за период: {total}.",
+        "Сформируй тезисы только по новостям ниже (фрагмент раздела «Общие новости»).",
+    ]
+    if batch_index == 1:
+        lines.append("Заполни headline и lead для всего раздела (остальные части объединятся программно).")
+    else:
+        lines.append("headline и lead оставь null — они уже заданы в части 1.")
+    if batch_index < batch_total:
+        lines.append("closing оставь null — итог будет в последней части.")
+    return lines
+
+
+def _split_news_for_ai_batches(
+    items: list,
+    max_chars: int,
+    *,
+    snippet_chars: int = 320,
+) -> list[list]:
+    """Разбить новости на батчи, каждый укладывается в max_chars (с запасом под заголовок части)."""
+    if not items:
+        return []
+    sorted_items = sorted(items, key=_news_published_sort_key, reverse=True)
+    header_reserve = 280
+    batches: list[list] = []
+    current: list = []
+    for item in sorted_items:
+        trial = current + [item]
+        text = _serialize_news_batch(trial, snippet_chars=snippet_chars)
+        if len(text) + header_reserve > max_chars and current:
+            batches.append(current)
+            current = [item]
+            continue
+        if len(text) + header_reserve > max_chars:
+            compact = _serialize_news_batch([item], snippet_chars=0)
+            if len(compact) + header_reserve > max_chars and current:
+                batches.append(current)
+                current = [item]
+            else:
+                current = [item]
+            continue
+        current = trial
+    if current:
+        batches.append(current)
+    return batches if batches else [sorted_items]
 
 
 def _serialize_news_for_ai(
@@ -64,34 +176,51 @@ def _serialize_news_for_ai(
     *,
     competitor_names: dict[str, str] | None = None,
     section_subject: str | None = None,
+    snippet_chars: int = 400,
+    max_chars: int | None = None,
+    total_count: int | None = None,
 ) -> str:
-    """Вход для ИИ: дата, заголовок+URL в Markdown, фрагмент."""
-    lines: list[str] = []
-    if section_subject:
-        lines.append(
-            f"Заголовок раздела отчёта: «{section_subject}». "
-            f"Саммари должно относиться только к этой компании/сущности. "
-            f"Не описывай других участников рынка, даже если они упомянуты в тексте новости."
-        )
-        lines.append("")
-    for n in items:
-        pub = n.published_at.strftime("%Y-%m-%d") if n.published_at else "—"
-        title = (n.title or "Без заголовка").replace("\n", " ").strip()
-        url = (n.url or "").strip()
-        prefix = ""
-        if competitor_names:
-            cid = n.competitor_id
-            if cid and str(cid) in competitor_names:
-                prefix = f"[{competitor_names[str(cid)]}] "
-            elif n.competitor_mentions:
-                names = [competitor_names.get(str(m), str(m)) for m in n.competitor_mentions]
-                prefix = f"[{', '.join(names)}] " if names else ""
-        link = f"[{title}]({url})" if url else title
-        lines.append(f"- {prefix}{pub} | {link}")
-        if n.snippet:
-            sn = n.snippet[:700] + ("…" if len(n.snippet) > 700 else "")
-            lines.append(f"  {sn}")
-    return "\n".join(lines) if lines else "(нет данных за период)"
+    """Вход для ИИ: дата, заголовок+URL в Markdown, опционально фрагмент."""
+    total = total_count if total_count is not None else len(items)
+
+    def build_lines(batch: list, *, snip_len: int) -> list[str]:
+        lines: list[str] = []
+        if section_subject:
+            lines.append(
+                f"Заголовок раздела отчёта: «{section_subject}». "
+                f"Саммари должно относиться только к этой компании/сущности. "
+                f"Не описывай других участников рынка, даже если они упомянуты в тексте новости."
+            )
+            lines.append("")
+        if total > len(batch):
+            lines.append(
+                f"Всего новостей в разделе: {total}. "
+                f"Ниже {len(batch)} самых свежих (остальные опущены по лимиту контекста ИИ)."
+            )
+            lines.append("")
+        for n in batch:
+            lines.extend(_news_item_lines(n, competitor_names=competitor_names, snippet_chars=snip_len))
+        return lines
+
+    if not items:
+        return "(нет данных за период)"
+
+    if not max_chars:
+        return "\n".join(build_lines(items, snip_len=max(0, snippet_chars)))
+
+    sorted_items = sorted(items, key=_news_published_sort_key, reverse=True)
+    limits = (800, 500, 350, 200, 120, 80)
+    for snip_len in (snippet_chars, max(snippet_chars // 2, 180), 0):
+        for limit in limits:
+            batch = sorted_items[: min(len(sorted_items), limit)]
+            text = "\n".join(build_lines(batch, snip_len=snip_len))
+            if len(text) <= max_chars:
+                return text
+
+    text = "\n".join(build_lines(sorted_items[:60], snip_len=0))
+    if len(text) > max_chars:
+        return text[: max_chars - 40] + "\n\n[... обрезано по лимиту контекста ...]"
+    return text
 
 
 def _serialize_indicators(daily: list, parsed: list) -> str:
@@ -784,6 +913,12 @@ def generate_report(
     if not section_settings.include_general_news:
         general_news = []
 
+    general_news_batches = (
+        _split_news_for_ai_batches(general_news, AI_NEWS_DATA_BUDGET_CHARS, snippet_chars=320)
+        if general_news
+        else []
+    )
+
     plan_steps: list[dict[str, str]] = []
     if section_settings.include_competitors and competitor_groups and (ai_cfg.get("prompt_competitors") or "").strip() and runtime.api_key:
         for cname in sorted(competitor_groups.keys()):
@@ -793,8 +928,15 @@ def generate_report(
         if prompt_dev_chk and runtime.api_key:
             for dname in sorted(developer_groups.keys()):
                 plan_steps.append({"step_id": f"developer:{dname}", "title": f"Застройщик: {dname}"})
-    if section_settings.include_general_news and general_news and (ai_cfg.get("prompt_news") or "").strip() and runtime.api_key:
-        plan_steps.append({"step_id": "news:general", "title": "Общие новости"})
+    if section_settings.include_general_news and general_news_batches and (ai_cfg.get("prompt_news") or "").strip() and runtime.api_key:
+        n_batches = len(general_news_batches)
+        if n_batches == 1:
+            plan_steps.append({"step_id": "news:general", "title": "Общие новости"})
+        else:
+            for i in range(n_batches):
+                plan_steps.append(
+                    {"step_id": f"news:general:{i + 1}", "title": f"Общие новости ({i + 1}/{n_batches})"}
+                )
     if section_settings.include_indicators and (ai_cfg.get("prompt_indicators") or "").strip() and runtime.api_key:
         plan_steps.append({"step_id": "indicators", "title": "Индикаторы"})
     if section_settings.include_regions and (ai_cfg.get("prompt_regions") or "").strip() and runtime.api_key:
@@ -822,6 +964,7 @@ def generate_report(
                 items,
                 competitor_names=competitor_names_map,
                 section_subject=cname,
+                max_chars=AI_NEWS_DATA_BUDGET_CHARS,
             )
             if prompt_comp and runtime.api_key:
                 text, payload = _run_ai(
@@ -839,7 +982,11 @@ def generate_report(
     if section_settings.include_developers and developer_groups:
         prompt_dev = (ai_cfg.get("prompt_developers") or "").strip() or (ai_cfg.get("prompt_competitors") or "").strip()
         for dname, items in sorted(developer_groups.items()):
-            entity_data = _serialize_news_for_ai(items, section_subject=dname)
+            entity_data = _serialize_news_for_ai(
+                items,
+                section_subject=dname,
+                max_chars=AI_NEWS_DATA_BUDGET_CHARS,
+            )
             if prompt_dev and runtime.api_key:
                 text, payload = _run_ai(
                     label=f"developer:{dname}",
@@ -853,19 +1000,58 @@ def generate_report(
             else:
                 result["processed_developers_by_name"][dname] = _simple_news_summary_linked(items, title=f"Застройщик {dname}")
 
-    if section_settings.include_general_news and general_news:
+    if section_settings.include_general_news and general_news_batches:
         prompt_news = (ai_cfg.get("prompt_news") or "").strip()
-        data_str = _serialize_news_for_ai(general_news)
+        total_general = len(general_news)
+        n_batches = len(general_news_batches)
         if prompt_news and runtime.api_key:
-            text, payload = _run_ai(
-                label="news:general",
-                title="Общие новости",
-                prompt=prompt_news,
-                data=data_str,
-            )
-            result["processed_news"] = text
-            if payload is not None:
-                result["processed_news_json"] = payload
+            if n_batches == 1:
+                data_str = _serialize_news_for_ai(
+                    general_news_batches[0],
+                    snippet_chars=320,
+                    max_chars=AI_NEWS_DATA_BUDGET_CHARS,
+                    total_count=total_general,
+                )
+                text, payload = _run_ai(
+                    label="news:general",
+                    title="Общие новости",
+                    prompt=prompt_news,
+                    data=data_str,
+                )
+                result["processed_news"] = text
+                if payload is not None:
+                    result["processed_news_json"] = payload
+            else:
+                payloads: list[dict[str, Any]] = []
+                texts: list[str] = []
+                for i, batch in enumerate(general_news_batches, 1):
+                    header = _general_news_batch_header(
+                        total=total_general,
+                        batch_index=i,
+                        batch_total=n_batches,
+                    )
+                    data_str = _serialize_news_batch(batch, snippet_chars=320, header_lines=header)
+                    if len(data_str) > AI_NEWS_DATA_BUDGET_CHARS:
+                        data_str = data_str[: AI_NEWS_DATA_BUDGET_CHARS - 40] + "\n\n[... обрезано ...]"
+                    text, payload = _run_ai(
+                        label=f"news:general:{i}",
+                        title=f"Общие новости ({i}/{n_batches})",
+                        prompt=prompt_news,
+                        data=data_str,
+                    )
+                    if payload is not None:
+                        payloads.append(payload)
+                    elif text and not str(text).startswith("[Ошибка ИИ"):
+                        parsed = try_parse_report_section(text)
+                        if parsed:
+                            payloads.append(parsed)
+                    texts.append(text)
+                merged = merge_report_section_payloads(payloads)
+                if merged:
+                    result["processed_news_json"] = merged
+                    result["processed_news"] = section_dict_to_markdown(merged)
+                else:
+                    result["processed_news"] = "\n\n".join(t for t in texts if t)
         else:
             result["processed_news"] = _simple_news_summary_linked(general_news, title="Общие новости")
 
@@ -911,7 +1097,11 @@ def generate_report(
         for rname, items in sorted(region_groups.items()):
             if not items:
                 continue
-            entity_data = _serialize_news_for_ai(items, section_subject=rname)
+            entity_data = _serialize_news_for_ai(
+                items,
+                section_subject=rname,
+                max_chars=AI_NEWS_DATA_BUDGET_CHARS,
+            )
             if prompt_reg and runtime.api_key:
                 text, payload = _run_ai(
                     label=f"region:{rname}",
