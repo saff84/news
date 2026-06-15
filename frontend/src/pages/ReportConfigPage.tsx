@@ -305,7 +305,6 @@ export function ReportConfigPage() {
   const { push } = useToast();
   const isAdmin = user?.role === "Admin";
 
-  const [config, setConfig] = useState<ReportConfig | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [form, setForm] = useState<ReportConfig>({
@@ -372,7 +371,6 @@ export function ReportConfigPage() {
         api.developers.list(accessToken),
         api.regions.list(accessToken),
       ]);
-      setConfig(c);
       setCompetitors(comp.items.filter((x) => x.is_active !== false));
       setDevelopers(dev.items.filter((x) => x.is_active !== false));
       setRegions(reg.items.filter((x) => x.is_active !== false));
@@ -462,9 +460,10 @@ export function ReportConfigPage() {
     setSaveBusy(true);
     setSaveSuccess(false);
     try {
+      const { general_news_themes, ...rest } = form;
       await api.reportConfig.update(accessToken, {
-        ...form,
-        general_news_themes: form.general_news_themes.map((g) => ({
+        ...rest,
+        general_news_themes: general_news_themes.map((g) => ({
           title: g.title.trim(),
           keywords: parseThemeKeywords(g.keywords),
         })),

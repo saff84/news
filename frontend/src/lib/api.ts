@@ -777,6 +777,7 @@ export const api = {
         disabled_region_ids: string[];
         date_range_days: number;
         report_month: string | null;
+        general_news_themes: Array<{ title: string; keywords: string[] }>;
       }>("/api/report-config", { method: "PUT", body: JSON.stringify(payload) }, accessToken),
   },
   newsFilter: {
