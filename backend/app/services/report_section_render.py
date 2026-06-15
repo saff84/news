@@ -378,23 +378,23 @@ def append_section_json_to_pdf_story(
                     story.append(Paragraph(markdown_links_to_reportlab_markup(str(p)), normal_style))
 
             for b in d.get("bullets") or []:
-            if not isinstance(b, dict):
-                continue
-            t = str(b.get("text") or "").strip()
-            if not t:
-                continue
-            cite_parts: list[str] = []
-            for c in b.get("citations") or []:
-                if not isinstance(c, dict):
+                if not isinstance(b, dict):
                     continue
-                url = str(c.get("url") or "").strip()
-                lab = str(c.get("label") or "источник").strip()
-                if url:
-                    cite_parts.append(f'<a href="{xml_esc(url)}" color="blue">{xml_esc(lab)}</a>')
-            bullet_xml = "• " + xml_esc(t).replace("\n", "<br/>")
-            if cite_parts:
-                bullet_xml += " " + " ".join(cite_parts)
-            story.append(Paragraph(bullet_xml, normal_style))
+                t = str(b.get("text") or "").strip()
+                if not t:
+                    continue
+                cite_parts: list[str] = []
+                for c in b.get("citations") or []:
+                    if not isinstance(c, dict):
+                        continue
+                    url = str(c.get("url") or "").strip()
+                    lab = str(c.get("label") or "источник").strip()
+                    if url:
+                        cite_parts.append(f'<a href="{xml_esc(url)}" color="blue">{xml_esc(lab)}</a>')
+                bullet_xml = "• " + xml_esc(t).replace("\n", "<br/>")
+                if cite_parts:
+                    bullet_xml += " " + " ".join(cite_parts)
+                story.append(Paragraph(bullet_xml, normal_style))
         if d.get("closing"):
             story.append(Paragraph(f"<i>{markdown_links_to_reportlab_markup(str(d['closing']))}</i>", normal_style))
     elif text_fallback and text_fallback.strip():
