@@ -316,7 +316,7 @@ async function request<T>(path: string, init: RequestInit = {}, accessToken?: st
     const msg = e instanceof Error ? e.message : "Network error";
     if (msg === "Failed to fetch" || msg.includes("NetworkError")) {
       throw new Error(
-        "Нет связи с API. Проверьте backend, nginx (/api) и миграцию: docker compose exec backend alembic upgrade head",
+        "Нет связи с API. Проверьте backend и миграцию: docker compose build backend && docker compose run --rm migrate && docker compose up -d backend frontend",
       );
     }
     throw e instanceof Error ? e : new Error(msg);

@@ -6,6 +6,12 @@ x-logging: &default-logging
     max-size: "${DOCKER_LOG_MAX_SIZE:-20m}"
     max-file: "${DOCKER_LOG_MAX_FILE:-5}"
 
+# Один образ для backend / migrate / worker — иначе после `build backend` migrate остаётся без новых alembic-ревизий.
+x-backend-image: &backend-image
+  image: newsint-backend
+  build:
+    context: ./backend
+
 services:
   db:
     logging: *default-logging
@@ -38,9 +44,8 @@ services:
       retries: 30
 
   migrate:
+    <<: *backend-image
     logging: *default-logging
-    build:
-      context: ./backend
     env_file:
       - .env
     environment:
@@ -72,10 +77,9 @@ services:
     restart: "no"
 
   backend:
+    <<: *backend-image
     logging: *default-logging
     restart: unless-stopped
-    build:
-      context: ./backend
     env_file:
       - .env
     environment:
@@ -116,10 +120,9 @@ services:
         condition: service_completed_successfully
 
   worker:
+    <<: *backend-image
     logging: *default-logging
     restart: unless-stopped
-    build:
-      context: ./backend
     env_file:
       - .env
     environment:
@@ -152,11 +155,10 @@ services:
         condition: service_completed_successfully
 
   tg-auth:
+    <<: *backend-image
     logging: *default-logging
     profiles:
       - manual
-    build:
-      context: ./backend
     env_file:
       - .env
     environment:
@@ -184,10 +186,9 @@ services:
         condition: service_healthy
 
   scheduler:
+    <<: *backend-image
     logging: *default-logging
     restart: unless-stopped
-    build:
-      context: ./backend
     env_file:
       - .env
     environment:
