@@ -40,10 +40,12 @@ from app.services.ai_runtime import (
 )
 from app.services.report_config import get_report_config
 from app.services.report_section_render import (
+    build_general_news_section,
     merge_report_section_payloads,
     section_dict_to_markdown,
     try_parse_report_section,
 )
+from app.services.general_news_themes import group_general_news_by_themes, normalize_general_news_themes
 from app.services.report_section_settings import (
     REGION_UNASSIGNED_LABEL,
     ReportSectionSettings,
@@ -109,8 +111,9 @@ def _serialize_news_batch(
         lines.extend(
             [
                 f"Заголовок раздела отчёта: «{section_subject}». "
-                f"Саммари должно относиться только к этой компании/сущности. "
-                f"Не описывай других участников рынка, даже если они упомянуты в тексте новости.",
+                f"Саммари должно относиться только к этому конкуренту/компании. "
+                f"Не описывай других участников рынка и не включай в саммари новости про них, "
+                f"даже если они упомянуты в тексте.",
                 "",
             ]
         )
@@ -121,19 +124,25 @@ def _serialize_news_batch(
     return "\n".join(lines) if lines else "(нет данных за период)"
 
 
-def _general_news_batch_header(*, total: int, batch_index: int, batch_total: int) -> list[str]:
-    if batch_total <= 1:
-        return []
+def _general_news_theme_batch_header(
+    *,
+    theme_title: str,
+    batch_index: int,
+    batch_total: int,
+    total_in_theme: int,
+) -> list[str]:
     lines = [
-        f"Часть {batch_index} из {batch_total}. Всего общих новостей за период: {total}.",
-        "Сформируй тезисы только по новостям ниже (фрагмент раздела «Общие новости»).",
+        f"Тема в разделе «Общие новости»: «{theme_title}».",
+        f"Новостей в теме: {total_in_theme}. Саммари только по новостям ниже, только по этой теме.",
     ]
-    if batch_index == 1:
-        lines.append("Заполни headline и lead для всего раздела (остальные части объединятся программно).")
-    else:
-        lines.append("headline и lead оставь null — они уже заданы в части 1.")
-    if batch_index < batch_total:
-        lines.append("closing оставь null — итог будет в последней части.")
+    if batch_total > 1:
+        lines.append(f"Часть {batch_index} из {batch_total} внутри темы.")
+        if batch_index == 1:
+            lines.append("headline и lead для темы — только здесь (общий заголовок раздела возьмём из первой темы).")
+        else:
+            lines.append("headline и lead — null.")
+        if batch_index < batch_total:
+            lines.append("closing — null (итог темы — в последней части).")
     return lines
 
 
@@ -188,8 +197,9 @@ def _serialize_news_for_ai(
         if section_subject:
             lines.append(
                 f"Заголовок раздела отчёта: «{section_subject}». "
-                f"Саммари должно относиться только к этой компании/сущности. "
-                f"Не описывай других участников рынка, даже если они упомянуты в тексте новости."
+                f"Саммари должно относиться только к этому конкуренту/компании. "
+                f"Не описывай других участников рынка и не включай в саммари новости про них, "
+                f"даже если они упомянуты в тексте."
             )
             lines.append("")
         if total > len(batch):
@@ -367,14 +377,35 @@ def _competitors_with_enabled_sources(db: Session, settings: ReportSectionSettin
     }
 
 
-def _group_competitor_news(news: list, competitors_map: dict[str, str]) -> dict[str, list]:
+def _news_belongs_to_competitor(
+    n: NewsItem,
+    competitor_id: uuid.UUID,
+    source_comp_map: dict[uuid.UUID, uuid.UUID],
+) -> bool:
+    """Primary (запись или источник) — один конкурент; иначе только явные mentions."""
+    pid = _primary_competitor_id(n, source_comp_map)
+    if pid:
+        return pid == competitor_id
+    return competitor_id in (n.competitor_mentions or [])
+
+
+def _group_competitor_news(
+    news: list,
+    competitors_map: dict[str, str],
+    source_comp_map: dict[uuid.UUID, uuid.UUID],
+) -> dict[str, list]:
+    """
+    Сначала primary: competitor_id на новости или competitor_id источника.
+    Если primary нет — по competitor_mentions (упоминание в тексте).
+    """
     out: dict[str, list] = defaultdict(list)
     for n in news:
-        cids = set()
-        if n.competitor_id:
-            cids.add(n.competitor_id)
-        cids.update(n.competitor_mentions or [])
-        for cid in cids:
+        pid = _primary_competitor_id(n, source_comp_map)
+        if pid:
+            cname = competitors_map.get(str(pid), str(pid))
+            out[cname].append(n)
+            continue
+        for cid in n.competitor_mentions or []:
             cname = competitors_map.get(str(cid), str(cid))
             out[cname].append(n)
     return dict(out)
@@ -554,6 +585,7 @@ def get_report_data_for_pdf(
     news_by_competitor = _group_competitor_news(
         [n for n in news if _is_competitor_news(n, source_comp_map)],
         competitors_map,
+        source_comp_map,
     )
     news_by_developer = _group_developer_news(
         [n for n in news if _is_developer_news(n, source_dev_map)],
@@ -900,7 +932,7 @@ def generate_report(
     region_map: dict[str, str] = {}
     for r in raw.get("regions", []):
         region_map[str(r.id)] = r.name
-    competitor_groups = _group_competitor_news(competitor_news, competitor_names_map)
+    competitor_groups = _group_competitor_news(competitor_news, competitor_names_map, source_comp_map)
     developer_groups = _group_developer_news(developer_news, developer_names_map, source_dev_map)
     for name, empty in _competitors_with_enabled_sources(db, section_settings).items():
         competitor_groups.setdefault(name, empty)
@@ -913,11 +945,8 @@ def generate_report(
     if not section_settings.include_general_news:
         general_news = []
 
-    general_news_batches = (
-        _split_news_for_ai_batches(general_news, AI_NEWS_DATA_BUDGET_CHARS, snippet_chars=320)
-        if general_news
-        else []
-    )
+    general_news_themes = normalize_general_news_themes(report_cfg.get("general_news_themes"))
+    general_news_themed = group_general_news_by_themes(general_news, general_news_themes)
 
     plan_steps: list[dict[str, str]] = []
     if section_settings.include_competitors and competitor_groups and (ai_cfg.get("prompt_competitors") or "").strip() and runtime.api_key:
@@ -928,15 +957,19 @@ def generate_report(
         if prompt_dev_chk and runtime.api_key:
             for dname in sorted(developer_groups.keys()):
                 plan_steps.append({"step_id": f"developer:{dname}", "title": f"Застройщик: {dname}"})
-    if section_settings.include_general_news and general_news_batches and (ai_cfg.get("prompt_news") or "").strip() and runtime.api_key:
-        n_batches = len(general_news_batches)
-        if n_batches == 1:
-            plan_steps.append({"step_id": "news:general", "title": "Общие новости"})
-        else:
-            for i in range(n_batches):
-                plan_steps.append(
-                    {"step_id": f"news:general:{i + 1}", "title": f"Общие новости ({i + 1}/{n_batches})"}
-                )
+    if section_settings.include_general_news and general_news_themed and (ai_cfg.get("prompt_news") or "").strip() and runtime.api_key:
+        for ti, (theme_title, theme_items) in enumerate(general_news_themed, 1):
+            n_batches = len(_split_news_for_ai_batches(theme_items, AI_NEWS_DATA_BUDGET_CHARS, snippet_chars=320))
+            if n_batches == 1:
+                plan_steps.append({"step_id": f"news:general:{ti}", "title": f"Общие: {theme_title}"})
+            else:
+                for bi in range(n_batches):
+                    plan_steps.append(
+                        {
+                            "step_id": f"news:general:{ti}:{bi + 1}",
+                            "title": f"Общие: {theme_title} ({bi + 1}/{n_batches})",
+                        }
+                    )
     if section_settings.include_indicators and (ai_cfg.get("prompt_indicators") or "").strip() and runtime.api_key:
         plan_steps.append({"step_id": "indicators", "title": "Индикаторы"})
     if section_settings.include_regions and (ai_cfg.get("prompt_regions") or "").strip() and runtime.api_key:
@@ -959,9 +992,16 @@ def generate_report(
 
     if section_settings.include_competitors and competitor_groups:
         prompt_comp = (ai_cfg.get("prompt_competitors") or "").strip()
+        competitor_id_by_name = {v: uuid.UUID(k) for k, v in competitor_names_map.items()}
         for cname, items in sorted(competitor_groups.items()):
+            cid = competitor_id_by_name.get(cname)
+            scoped = (
+                [n for n in items if _news_belongs_to_competitor(n, cid, source_comp_map)]
+                if cid
+                else items
+            )
             entity_data = _serialize_news_for_ai(
-                items,
+                scoped,
                 competitor_names=competitor_names_map,
                 section_subject=cname,
                 max_chars=AI_NEWS_DATA_BUDGET_CHARS,
@@ -977,7 +1017,9 @@ def generate_report(
                 if payload is not None:
                     result["processed_competitors_by_name_json"][cname] = payload
             else:
-                result["processed_competitors_by_name"][cname] = _simple_news_summary_linked(items, title=f"Конкурент {cname}")
+                result["processed_competitors_by_name"][cname] = _simple_news_summary_linked(
+                    scoped, title=f"Конкурент {cname}"
+                )
 
     if section_settings.include_developers and developer_groups:
         prompt_dev = (ai_cfg.get("prompt_developers") or "").strip() or (ai_cfg.get("prompt_competitors") or "").strip()
@@ -1000,58 +1042,52 @@ def generate_report(
             else:
                 result["processed_developers_by_name"][dname] = _simple_news_summary_linked(items, title=f"Застройщик {dname}")
 
-    if section_settings.include_general_news and general_news_batches:
+    if section_settings.include_general_news and general_news_themed:
         prompt_news = (ai_cfg.get("prompt_news") or "").strip()
-        total_general = len(general_news)
-        n_batches = len(general_news_batches)
         if prompt_news and runtime.api_key:
-            if n_batches == 1:
-                data_str = _serialize_news_for_ai(
-                    general_news_batches[0],
-                    snippet_chars=320,
-                    max_chars=AI_NEWS_DATA_BUDGET_CHARS,
-                    total_count=total_general,
+            theme_results: list[tuple[str, dict[str, Any]]] = []
+            fallback_texts: list[str] = []
+            for ti, (theme_title, theme_items) in enumerate(general_news_themed, 1):
+                batches = _split_news_for_ai_batches(
+                    theme_items, AI_NEWS_DATA_BUDGET_CHARS, snippet_chars=320
                 )
-                text, payload = _run_ai(
-                    label="news:general",
-                    title="Общие новости",
-                    prompt=prompt_news,
-                    data=data_str,
-                )
-                result["processed_news"] = text
-                if payload is not None:
-                    result["processed_news_json"] = payload
-            else:
-                payloads: list[dict[str, Any]] = []
-                texts: list[str] = []
-                for i, batch in enumerate(general_news_batches, 1):
-                    header = _general_news_batch_header(
-                        total=total_general,
-                        batch_index=i,
-                        batch_total=n_batches,
+                batch_payloads: list[dict[str, Any]] = []
+                for bi, batch in enumerate(batches, 1):
+                    header = _general_news_theme_batch_header(
+                        theme_title=theme_title,
+                        batch_index=bi,
+                        batch_total=len(batches),
+                        total_in_theme=len(theme_items),
                     )
                     data_str = _serialize_news_batch(batch, snippet_chars=320, header_lines=header)
                     if len(data_str) > AI_NEWS_DATA_BUDGET_CHARS:
                         data_str = data_str[: AI_NEWS_DATA_BUDGET_CHARS - 40] + "\n\n[... обрезано ...]"
+                    step_label = f"news:general:{ti}" if len(batches) == 1 else f"news:general:{ti}:{bi}"
+                    step_title = f"Общие: {theme_title}" + (
+                        f" ({bi}/{len(batches)})" if len(batches) > 1 else ""
+                    )
                     text, payload = _run_ai(
-                        label=f"news:general:{i}",
-                        title=f"Общие новости ({i}/{n_batches})",
+                        label=step_label,
+                        title=step_title,
                         prompt=prompt_news,
                         data=data_str,
                     )
                     if payload is not None:
-                        payloads.append(payload)
+                        batch_payloads.append(payload)
                     elif text and not str(text).startswith("[Ошибка ИИ"):
                         parsed = try_parse_report_section(text)
                         if parsed:
-                            payloads.append(parsed)
-                    texts.append(text)
-                merged = merge_report_section_payloads(payloads)
-                if merged:
-                    result["processed_news_json"] = merged
-                    result["processed_news"] = section_dict_to_markdown(merged)
-                else:
-                    result["processed_news"] = "\n\n".join(t for t in texts if t)
+                            batch_payloads.append(parsed)
+                    fallback_texts.append(text)
+                merged_theme = merge_report_section_payloads(batch_payloads) if batch_payloads else {}
+                if merged_theme:
+                    theme_results.append((theme_title, merged_theme))
+            merged = build_general_news_section(theme_results)
+            if merged:
+                result["processed_news_json"] = merged
+                result["processed_news"] = section_dict_to_markdown(merged)
+            else:
+                result["processed_news"] = "\n\n".join(t for t in fallback_texts if t)
         else:
             result["processed_news"] = _simple_news_summary_linked(general_news, title="Общие новости")
 

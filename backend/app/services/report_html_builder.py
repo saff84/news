@@ -188,6 +188,8 @@ def build_report_html(
     .summary.rich {{ white-space: normal; }}
     .summary.rich a {{ color: #2563eb; text-decoration: underline; }}
     .summary.structured .sec-headline {{ margin: 0 0 8px 0; font-size: 16px; }}
+    .summary.structured .sec-subtheme {{ margin: 18px 0 8px 0; font-size: 15px; font-weight: 600; color: #334155; }}
+    .summary.structured .sec-subtheme-body {{ margin-bottom: 4px; }}
     .summary.structured .sec-bullets {{ margin: 8px 0; padding-left: 1.2em; }}
     .summary.structured .sec-lead, .summary.structured .sec-closing {{ margin: 8px 0; }}
     .two {{ display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }}

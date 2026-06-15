@@ -134,6 +134,68 @@ def merge_report_section_payloads(sections: list[dict[str, Any]]) -> dict[str, A
     return merged
 
 
+def build_general_news_section(theme_results: list[tuple[str, dict[str, Any]]]) -> dict[str, Any]:
+    """Собрать финальный JSON «Общие новости» из саммари по темам."""
+    subsections: list[dict[str, Any]] = []
+    headline: str | None = None
+    lead: str | None = None
+    closing: str | None = None
+    for i, (title, payload) in enumerate(theme_results):
+        if not payload:
+            continue
+        p = sanitize_section_dict(payload)
+        bullets = list(p.get("bullets") or [])
+        paragraphs = list(p.get("paragraphs") or [])
+        if not bullets and not paragraphs:
+            continue
+        subsections.append({"title": title, "paragraphs": paragraphs, "bullets": bullets})
+        if i == 0:
+            headline = p.get("headline")
+            lead = p.get("lead")
+        if p.get("closing"):
+            closing = p.get("closing")
+    if not subsections:
+        return {}
+    return {
+        "headline": headline or "Общие новости",
+        "lead": lead,
+        "paragraphs": [],
+        "bullets": [],
+        "subsections": subsections,
+        "closing": closing,
+    }
+
+
+def _subsection_body_html(sub: dict[str, Any]) -> str:
+    blocks: list[str] = []
+    for p in sub.get("paragraphs") or []:
+        if p:
+            blocks.append(f"<p>{markdown_links_to_html(str(p))}</p>")
+    bullets = sub.get("bullets") or []
+    if bullets:
+        lis: list[str] = []
+        for b in bullets:
+            if not isinstance(b, dict):
+                continue
+            t = escape(strip_report_emojis(str(b.get("text") or "")))
+            if not t:
+                continue
+            cites = b.get("citations") or []
+            cite_html: list[str] = []
+            for c in cites:
+                if not isinstance(c, dict):
+                    continue
+                url = escape(str(c.get("url") or ""))
+                lab = escape(str(c.get("label") or "источник"))
+                if url:
+                    cite_html.append(f'<a href="{url}" target="_blank" rel="noreferrer">{lab}</a>')
+            inner = t + (" " + " ".join(cite_html) if cite_html else "")
+            lis.append(f"<li>{inner}</li>")
+        if lis:
+            blocks.append("<ul class='sec-bullets'>" + "".join(lis) + "</ul>")
+    return "".join(blocks)
+
+
 def sanitize_section_dict(d: dict[str, Any]) -> dict[str, Any]:
     return _normalize_section_data(d)
 
@@ -164,8 +226,23 @@ def section_dict_to_markdown(d: dict[str, Any]) -> str:
             lab = (c.get("label") or "источник").strip()
             if url:
                 link_bits.append(f"[{lab}]({url})")
-        if t:
-            parts.append("- " + t + (" " + " ".join(link_bits) if link_bits else ""))
+        parts.append("- " + t + (" " + " ".join(link_bits) if link_bits else ""))
+    for sub in d.get("subsections") or []:
+        if not isinstance(sub, dict):
+            continue
+        st = str(sub.get("title") or "").strip()
+        if st:
+            parts.append(f"### {st}")
+        for p in sub.get("paragraphs") or []:
+            if p:
+                parts.append(str(p))
+        for b in sub.get("bullets") or []:
+            if not isinstance(b, dict):
+                continue
+            t = str(b.get("text") or "").strip()
+            if not t:
+                continue
+            parts.append(f"- {t}")
     if d.get("closing"):
         parts.append(str(d["closing"]))
     return "\n\n".join(parts) if parts else ""
@@ -178,31 +255,45 @@ def section_dict_to_html_fragment(d: dict[str, Any]) -> str:
         blocks.append(f"<h4 class='sec-headline'>{escape(str(d['headline']))}</h4>")
     if d.get("lead"):
         blocks.append(f"<p class='sec-lead'>{markdown_links_to_html(str(d['lead']))}</p>")
-    for p in d.get("paragraphs") or []:
-        if p:
-            blocks.append(f"<p>{markdown_links_to_html(str(p))}</p>")
-    bullets = d.get("bullets") or []
-    if bullets:
-        lis: list[str] = []
-        for b in bullets:
-            if not isinstance(b, dict):
+    subsections = d.get("subsections") or []
+    if subsections:
+        for sub in subsections:
+            if not isinstance(sub, dict):
                 continue
-            t = escape(strip_report_emojis(str(b.get("text") or "")))
-            if not t:
+            st = str(sub.get("title") or "").strip()
+            body = _subsection_body_html(sub)
+            if not st and not body:
                 continue
-            cites = b.get("citations") or []
-            cite_html: list[str] = []
-            for c in cites:
-                if not isinstance(c, dict):
+            if st:
+                blocks.append(f"<h4 class='sec-subtheme'>{escape(st)}</h4>")
+            if body:
+                blocks.append(f"<div class='sec-subtheme-body'>{body}</div>")
+    else:
+        for p in d.get("paragraphs") or []:
+            if p:
+                blocks.append(f"<p>{markdown_links_to_html(str(p))}</p>")
+        bullets = d.get("bullets") or []
+        if bullets:
+            lis: list[str] = []
+            for b in bullets:
+                if not isinstance(b, dict):
                     continue
-                url = escape(str(c.get("url") or ""))
-                lab = escape(str(c.get("label") or "источник"))
-                if url:
-                    cite_html.append(f'<a href="{url}" target="_blank" rel="noreferrer">{lab}</a>')
-            inner = t + (" " + " ".join(cite_html) if cite_html else "")
-            lis.append(f"<li>{inner}</li>")
-        if lis:
-            blocks.append("<ul class='sec-bullets'>" + "".join(lis) + "</ul>")
+                t = escape(strip_report_emojis(str(b.get("text") or "")))
+                if not t:
+                    continue
+                cites = b.get("citations") or []
+                cite_html: list[str] = []
+                for c in cites:
+                    if not isinstance(c, dict):
+                        continue
+                    url = escape(str(c.get("url") or ""))
+                    lab = escape(str(c.get("label") or "источник"))
+                    if url:
+                        cite_html.append(f'<a href="{url}" target="_blank" rel="noreferrer">{lab}</a>')
+                inner = t + (" " + " ".join(cite_html) if cite_html else "")
+                lis.append(f"<li>{inner}</li>")
+            if lis:
+                blocks.append("<ul class='sec-bullets'>" + "".join(lis) + "</ul>")
     if d.get("closing"):
         blocks.append(f"<p class='sec-closing'><em>{markdown_links_to_html(str(d['closing']))}</em></p>")
     return "".join(blocks)
@@ -244,17 +335,49 @@ def append_section_json_to_pdf_story(
 
     story.append(Paragraph(f"<b>{escape(section_title)}</b>", h3_style))
     if payload:
+        from xml.sax.saxutils import escape as xml_esc
+
         d = sanitize_section_dict(payload)
         if d.get("headline"):
             story.append(Paragraph(f"<b>{escape(str(d['headline']))}</b>", normal_style))
         if d.get("lead"):
             story.append(Paragraph(markdown_links_to_reportlab_markup(str(d["lead"])), normal_style))
-        for p in d.get("paragraphs") or []:
-            if p:
-                story.append(Paragraph(markdown_links_to_reportlab_markup(str(p)), normal_style))
-        from xml.sax.saxutils import escape as xml_esc
+        subs = d.get("subsections") or []
+        if subs:
+            for sub in subs:
+                if not isinstance(sub, dict):
+                    continue
+                st = str(sub.get("title") or "").strip()
+                if st:
+                    story.append(Paragraph(f"<b>{escape(st)}</b>", normal_style))
+                for p in sub.get("paragraphs") or []:
+                    if p:
+                        story.append(Paragraph(markdown_links_to_reportlab_markup(str(p)), normal_style))
+                for b in sub.get("bullets") or []:
+                    if not isinstance(b, dict):
+                        continue
+                    t = str(b.get("text") or "").strip()
+                    if not t:
+                        continue
+                    cite_parts: list[str] = []
+                    for c in b.get("citations") or []:
+                        if not isinstance(c, dict):
+                            continue
+                        url = str(c.get("url") or "").strip()
+                        lab = str(c.get("label") or "источник").strip()
+                        if url:
+                            cite_parts.append(f'<a href="{xml_esc(url)}" color="blue">{xml_esc(lab)}</a>')
+                    bullet_xml = "• " + xml_esc(t).replace("\n", "<br/>")
+                    if cite_parts:
+                        bullet_xml += " " + " ".join(cite_parts)
+                    story.append(Paragraph(bullet_xml, normal_style))
+                story.append(Spacer(1, 0.15 * cm))
+        else:
+            for p in d.get("paragraphs") or []:
+                if p:
+                    story.append(Paragraph(markdown_links_to_reportlab_markup(str(p)), normal_style))
 
-        for b in d.get("bullets") or []:
+            for b in d.get("bullets") or []:
             if not isinstance(b, dict):
                 continue
             t = str(b.get("text") or "").strip()

@@ -7,6 +7,7 @@ from typing import Any
 from sqlalchemy.orm import Session
 
 from app.models.config import ReportConfig
+from app.services.general_news_themes import default_general_news_themes
 
 
 def get_report_config(db: Session) -> dict[str, Any]:
@@ -55,4 +56,5 @@ def _default_config() -> dict[str, Any]:
         "disabled_region_ids": [],
         "date_range_days": 30,
         "report_month": None,  # "YYYY-MM" — отчёт за месяц; приоритет над date_range_days
+        "general_news_themes": default_general_news_themes(),
     }

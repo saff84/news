@@ -41,8 +41,6 @@ def tag_item(
 
     competitors = db.query(Competitor).filter(Competitor.is_active.is_(True)).all()
     competitor_mentions: set[uuid.UUID] = set()
-    if source_competitor_id:
-        competitor_mentions.add(source_competitor_id)
     for c in competitors:
         terms = [c.name] + (c.aliases or []) + (c.tags or [])
         if _contains_any(text_lc, terms):
@@ -50,8 +48,6 @@ def tag_item(
 
     developers = db.query(Developer).filter(Developer.is_active.is_(True)).all()
     developer_mentions: set[uuid.UUID] = set()
-    if source_developer_id:
-        developer_mentions.add(source_developer_id)
     for d in developers:
         terms = [d.name] + (d.aliases or []) + (d.tags or [])
         if _contains_any(text_lc, terms):

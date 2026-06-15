@@ -10,11 +10,22 @@ from fastapi import APIRouter, Depends
 from app.core.deps import require_role
 from app.db import get_db
 from app.models.auth import Role, User
+from app.services.general_news_themes import default_general_news_themes, normalize_general_news_themes
 from app.services.report_config import get_report_config, save_report_config
 from pydantic import BaseModel, Field, field_validator
 from sqlalchemy.orm import Session
 
 router = APIRouter(prefix="/report-config", tags=["report-config"])
+
+
+class GeneralNewsThemeOut(BaseModel):
+    title: str
+    keywords: list[str] = Field(default_factory=list)
+
+
+class GeneralNewsThemeIn(BaseModel):
+    title: str = Field(min_length=1, max_length=200)
+    keywords: list[str] = Field(default_factory=list)
 
 
 class ReportConfigOut(BaseModel):
@@ -36,6 +47,7 @@ class ReportConfigOut(BaseModel):
     disabled_region_ids: list[str]
     date_range_days: int
     report_month: str | None  # "YYYY-MM" — отчёт за месяц (приоритет над date_range_days)
+    general_news_themes: list[GeneralNewsThemeOut] = Field(default_factory=list)
 
 
 class ReportConfigUpdateIn(BaseModel):
@@ -57,6 +69,7 @@ class ReportConfigUpdateIn(BaseModel):
     disabled_region_ids: list[UUID] | None = None
     date_range_days: int | None = Field(default=None, ge=1, le=365)
     report_month: str | None = Field(default=None, pattern=r"^(\d{4}-\d{2})?$")  # "2026-01" or empty
+    general_news_themes: list[GeneralNewsThemeIn] | None = None
 
     @field_validator("report_month", mode="before")
     @classmethod
@@ -84,11 +97,16 @@ def _to_out(cfg: dict[str, Any]) -> ReportConfigOut:
         "disabled_region_ids": [],
         "date_range_days": 30,
         "report_month": None,
+        "general_news_themes": default_general_news_themes(),
     }
     merged = {**defaults, **cfg}
     out = {k: merged.get(k, v) for k, v in defaults.items()}
     for key in ("disabled_competitor_ids", "disabled_developer_ids", "disabled_region_ids"):
         out[key] = [str(x) for x in (out.get(key) or [])]
+    themes = normalize_general_news_themes(out.get("general_news_themes"))
+    out["general_news_themes"] = [
+        GeneralNewsThemeOut(title=str(t["title"]), keywords=list(t.get("keywords") or [])) for t in themes
+    ]
     return ReportConfigOut(**out)
 
 
@@ -110,6 +128,11 @@ def update_config(
 ) -> ReportConfigOut:
     """Update report config (Admin only)."""
     kwargs = payload.model_dump(exclude_unset=True, mode="json")
+    if "general_news_themes" in kwargs and kwargs["general_news_themes"] is not None:
+        kwargs["general_news_themes"] = [
+            {"title": g["title"], "keywords": g.get("keywords") or []}
+            for g in kwargs["general_news_themes"]
+        ]
     save_report_config(db, **kwargs)
     cfg = get_report_config(db)
     return _to_out(cfg)

@@ -5,6 +5,11 @@ import { useAuth } from "../state/auth";
 import { useToast } from "../state/toast";
 import { HintBox } from "../components/Field";
 
+type GeneralNewsThemeForm = {
+  title: string;
+  keywords: string;
+};
+
 type ReportConfig = {
   title: string;
   subtitle: string;
@@ -24,7 +29,32 @@ type ReportConfig = {
   disabled_region_ids: string[];
   date_range_days: number;
   report_month: string | null;
+  general_news_themes: GeneralNewsThemeForm[];
 };
+
+const DEFAULT_GENERAL_NEWS_THEMES: GeneralNewsThemeForm[] = [
+  { title: "Ипотека и ставка", keywords: "ипотек, ипотеч, ключев, ставк, цб, центробанк, рефинанс" },
+  { title: "Ввод жилья и строительство", keywords: "ввод, введен, росстат, жиль, строитель, млн м, млн кв" },
+  { title: "Законодательство и регулирование", keywords: "закон, госдум, минстрой, регулир, норматив, постановлен" },
+  { title: "Рынок и цены", keywords: "цен, стоимост, продаж, спрос, предложен, рынок, новостро, девелоп" },
+  { title: "Госпрограммы и субсидии", keywords: "семейн, льгот, субсид, господдерж, dom.rf, дом.рф, госпрограмм" },
+  { title: "Прочее", keywords: "" },
+];
+
+function parseThemeKeywords(raw: string): string[] {
+  return raw
+    .split(/[,;\n]/)
+    .map((s) => s.trim())
+    .filter(Boolean);
+}
+
+function themesFromApi(items: Array<{ title: string; keywords: string[] }> | undefined): GeneralNewsThemeForm[] {
+  if (!items?.length) return DEFAULT_GENERAL_NEWS_THEMES;
+  return items.map((g) => ({
+    title: g.title,
+    keywords: (g.keywords || []).join(", "),
+  }));
+}
 
 function toggleId(list: string[], id: string, included: boolean): string[] {
   const s = new Set(list);
@@ -297,6 +327,7 @@ export function ReportConfigPage() {
     disabled_region_ids: [],
     date_range_days: 30,
     report_month: null,
+    general_news_themes: DEFAULT_GENERAL_NEWS_THEMES,
   });
   const [competitors, setCompetitors] = useState<CompetitorOut[]>([]);
   const [developers, setDevelopers] = useState<DeveloperOut[]>([]);
@@ -364,6 +395,7 @@ export function ReportConfigPage() {
         disabled_region_ids: c.disabled_region_ids ?? [],
         date_range_days: c.date_range_days,
         report_month: c.report_month ?? null,
+        general_news_themes: themesFromApi(c.general_news_themes),
       });
     } catch (e: unknown) {
       setError(e instanceof Error ? e.message : "Ошибка загрузки");
@@ -430,7 +462,13 @@ export function ReportConfigPage() {
     setSaveBusy(true);
     setSaveSuccess(false);
     try {
-      await api.reportConfig.update(accessToken, form);
+      await api.reportConfig.update(accessToken, {
+        ...form,
+        general_news_themes: form.general_news_themes.map((g) => ({
+          title: g.title.trim(),
+          keywords: parseThemeKeywords(g.keywords),
+        })),
+      });
       setSaveSuccess(true);
       reload();
       setTimeout(() => setSaveSuccess(false), 3000);
@@ -585,6 +623,79 @@ export function ReportConfigPage() {
                 />
                 <span className="text-sm">Общие новости</span>
               </label>
+              {form.include_general_news ? (
+                <div className="mt-3 rounded border border-sky-100 bg-sky-50/50 p-3 sm:col-span-2 lg:col-span-3">
+                  <p className="text-sm font-medium text-slate-800">Темы в «Общие новости»</p>
+                  <p className="mt-1 text-xs text-slate-600">
+                    Новость попадает в первую подходящую тему (по заголовку и тексту). Пустые ключи у «Прочее» — всё
+                    остальное. На каждую тему — отдельный запрос к ИИ, в отчёте один блок с подзаголовками.
+                  </p>
+                  <div className="mt-3 space-y-3">
+                    {form.general_news_themes.map((g, idx) => (
+                      <div
+                        key={idx}
+                        className="grid grid-cols-1 gap-2 rounded-lg border border-slate-200 bg-white p-3 md:grid-cols-2"
+                      >
+                        <label className="block">
+                          <span className="text-xs text-slate-600">Тема</span>
+                          <input
+                            className="mt-1 w-full rounded border px-3 py-2 text-sm"
+                            value={g.title}
+                            disabled={!isAdmin}
+                            onChange={(e) =>
+                              setForm((f) => {
+                                const themes = [...f.general_news_themes];
+                                themes[idx] = { ...themes[idx], title: e.target.value };
+                                return { ...f, general_news_themes: themes };
+                              })
+                            }
+                          />
+                        </label>
+                        <label className="block">
+                          <span className="text-xs text-slate-600">Ключи (через запятую)</span>
+                          <textarea
+                            className="mt-1 w-full rounded border px-3 py-2 text-sm"
+                            rows={2}
+                            value={g.keywords}
+                            disabled={!isAdmin}
+                            placeholder="Пусто — только для «Прочее»"
+                            onChange={(e) =>
+                              setForm((f) => {
+                                const themes = [...f.general_news_themes];
+                                themes[idx] = { ...themes[idx], keywords: e.target.value };
+                                return { ...f, general_news_themes: themes };
+                              })
+                            }
+                          />
+                        </label>
+                      </div>
+                    ))}
+                  </div>
+                  {isAdmin ? (
+                    <div className="mt-2 flex flex-wrap gap-2">
+                      <button
+                        type="button"
+                        className="rounded border bg-white px-2 py-1 text-xs hover:bg-slate-50"
+                        onClick={() =>
+                          setForm((f) => ({
+                            ...f,
+                            general_news_themes: [...f.general_news_themes, { title: "Новая тема", keywords: "" }],
+                          }))
+                        }
+                      >
+                        + Тема
+                      </button>
+                      <button
+                        type="button"
+                        className="rounded border bg-white px-2 py-1 text-xs hover:bg-slate-50"
+                        onClick={() => setForm((f) => ({ ...f, general_news_themes: DEFAULT_GENERAL_NEWS_THEMES }))}
+                      >
+                        Сбросить к умолчанию
+                      </button>
+                    </div>
+                  ) : null}
+                </div>
+              ) : null}
               <label className="flex items-center gap-2">
                 <input
                   type="checkbox"
