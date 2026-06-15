@@ -46,6 +46,7 @@ from app.services.report_section_render import (
     try_parse_report_section,
 )
 from app.services.general_news_themes import group_general_news_by_themes, normalize_general_news_themes
+from app.tagging.rules import filter_competitor_mentions, filter_developer_mentions
 from app.services.report_section_settings import (
     REGION_UNASSIGNED_LABEL,
     ReportSectionSettings,
@@ -331,16 +332,32 @@ def _primary_competitor_id(n: NewsItem, source_comp_map: dict[uuid.UUID, uuid.UU
     return None
 
 
-def _is_developer_news(n: NewsItem, source_dev_map: dict[uuid.UUID, uuid.UUID]) -> bool:
+def _active_competitors_by_id(db: Session) -> dict[uuid.UUID, Competitor]:
+    return {c.id: c for c in db.query(Competitor).filter(Competitor.is_active.is_(True)).all()}
+
+
+def _active_developers_by_id(db: Session) -> dict[uuid.UUID, Developer]:
+    return {d.id: d for d in db.query(Developer).filter(Developer.is_active.is_(True)).all()}
+
+
+def _is_developer_news(
+    n: NewsItem,
+    source_dev_map: dict[uuid.UUID, uuid.UUID],
+    developers_by_id: dict[uuid.UUID, Developer],
+) -> bool:
     if _primary_developer_id(n, source_dev_map):
         return True
-    return bool(n.developer_mentions and len(n.developer_mentions) > 0)
+    return bool(filter_developer_mentions(n, developers_by_id))
 
 
-def _is_competitor_news(n: NewsItem, source_comp_map: dict[uuid.UUID, uuid.UUID]) -> bool:
+def _is_competitor_news(
+    n: NewsItem,
+    source_comp_map: dict[uuid.UUID, uuid.UUID],
+    competitors_by_id: dict[uuid.UUID, Competitor],
+) -> bool:
     if _primary_competitor_id(n, source_comp_map):
         return True
-    return bool(n.competitor_mentions and len(n.competitor_mentions) > 0)
+    return bool(filter_competitor_mentions(n, competitors_by_id))
 
 
 def _developers_with_enabled_sources(db: Session, settings: ReportSectionSettings) -> dict[str, list]:
@@ -381,22 +398,24 @@ def _news_belongs_to_competitor(
     n: NewsItem,
     competitor_id: uuid.UUID,
     source_comp_map: dict[uuid.UUID, uuid.UUID],
+    competitors_by_id: dict[uuid.UUID, Competitor],
 ) -> bool:
-    """Primary (запись или источник) — один конкурент; иначе только явные mentions."""
+    """Primary (запись или источник) — один конкурент; иначе только подтверждённые mentions в тексте."""
     pid = _primary_competitor_id(n, source_comp_map)
     if pid:
         return pid == competitor_id
-    return competitor_id in (n.competitor_mentions or [])
+    return competitor_id in filter_competitor_mentions(n, competitors_by_id)
 
 
 def _group_competitor_news(
     news: list,
     competitors_map: dict[str, str],
     source_comp_map: dict[uuid.UUID, uuid.UUID],
+    competitors_by_id: dict[uuid.UUID, Competitor],
 ) -> dict[str, list]:
     """
     Сначала primary: competitor_id на новости или competitor_id источника.
-    Если primary нет — по competitor_mentions (упоминание в тексте).
+    Если primary нет — по competitor_mentions (упоминание в тексте, без ложных срабатываний в URL).
     """
     out: dict[str, list] = defaultdict(list)
     for n in news:
@@ -405,7 +424,7 @@ def _group_competitor_news(
             cname = competitors_map.get(str(pid), str(pid))
             out[cname].append(n)
             continue
-        for cid in n.competitor_mentions or []:
+        for cid in filter_competitor_mentions(n, competitors_by_id):
             cname = competitors_map.get(str(cid), str(cid))
             out[cname].append(n)
     return dict(out)
@@ -415,6 +434,7 @@ def _group_developer_news(
     news: list,
     developers_map: dict[str, str],
     source_dev_map: dict[uuid.UUID, uuid.UUID],
+    developers_by_id: dict[uuid.UUID, Developer],
 ) -> dict[str, list]:
     """
     Сначала primary: developer_id на новости или developer_id источника (канал Самолёт и т.д.).
@@ -427,7 +447,7 @@ def _group_developer_news(
             dname = developers_map.get(str(pid), str(pid))
             out[dname].append(n)
             continue
-        for did in n.developer_mentions or []:
+        for did in filter_developer_mentions(n, developers_by_id):
             dname = developers_map.get(str(did), str(did))
             out[dname].append(n)
     return dict(out)
@@ -549,6 +569,8 @@ def get_report_data_for_pdf(
     regions_list = raw["regions"]
     region_map = {str(r.id): r.name for r in regions_list}
     source_dev_map, source_comp_map = _load_source_entity_maps(db, news)
+    competitors_by_id = _active_competitors_by_id(db)
+    developers_by_id = _active_developers_by_id(db)
 
     source_ids = {n.source_id for n in news if n.source_id}
     sources_map: dict[str, str] = {}
@@ -583,14 +605,16 @@ def get_report_data_for_pdf(
             developers_map[str(d.id)] = d.name or str(d.id)
 
     news_by_competitor = _group_competitor_news(
-        [n for n in news if _is_competitor_news(n, source_comp_map)],
+        [n for n in news if _is_competitor_news(n, source_comp_map, competitors_by_id)],
         competitors_map,
         source_comp_map,
+        competitors_by_id,
     )
     news_by_developer = _group_developer_news(
-        [n for n in news if _is_developer_news(n, source_dev_map)],
+        [n for n in news if _is_developer_news(n, source_dev_map, developers_by_id)],
         developers_map,
         source_dev_map,
+        developers_by_id,
     )
     settings = section_settings or parse_report_section_settings({})
     if not include_news:
@@ -619,7 +643,9 @@ def get_report_data_for_pdf(
     news_general: list = []
     if settings.include_general_news:
         for n in news:
-            if not _is_competitor_news(n, source_comp_map) and not _is_developer_news(n, source_dev_map):
+            if not _is_competitor_news(n, source_comp_map, competitors_by_id) and not _is_developer_news(
+                n, source_dev_map, developers_by_id
+            ):
                 news_general.append(n)
 
     # Group news by region
@@ -896,13 +922,16 @@ def generate_report(
 
     all_news = raw["news"]
     source_dev_map, source_comp_map = _load_source_entity_maps(db, all_news)
+    competitors_by_id = _active_competitors_by_id(db)
+    developers_by_id = _active_developers_by_id(db)
 
-    competitor_news = [n for n in all_news if _is_competitor_news(n, source_comp_map)]
-    developer_news = [n for n in all_news if _is_developer_news(n, source_dev_map)]
+    competitor_news = [n for n in all_news if _is_competitor_news(n, source_comp_map, competitors_by_id)]
+    developer_news = [n for n in all_news if _is_developer_news(n, source_dev_map, developers_by_id)]
     general_news = [
         n
         for n in all_news
-        if not _is_competitor_news(n, source_comp_map) and not _is_developer_news(n, source_dev_map)
+        if not _is_competitor_news(n, source_comp_map, competitors_by_id)
+        and not _is_developer_news(n, source_dev_map, developers_by_id)
     ]
 
     competitor_names_map: dict[str, str] = {}
@@ -932,8 +961,12 @@ def generate_report(
     region_map: dict[str, str] = {}
     for r in raw.get("regions", []):
         region_map[str(r.id)] = r.name
-    competitor_groups = _group_competitor_news(competitor_news, competitor_names_map, source_comp_map)
-    developer_groups = _group_developer_news(developer_news, developer_names_map, source_dev_map)
+    competitor_groups = _group_competitor_news(
+        competitor_news, competitor_names_map, source_comp_map, competitors_by_id
+    )
+    developer_groups = _group_developer_news(
+        developer_news, developer_names_map, source_dev_map, developers_by_id
+    )
     for name, empty in _competitors_with_enabled_sources(db, section_settings).items():
         competitor_groups.setdefault(name, empty)
     for name, empty in _developers_with_enabled_sources(db, section_settings).items():
@@ -996,7 +1029,7 @@ def generate_report(
         for cname, items in sorted(competitor_groups.items()):
             cid = competitor_id_by_name.get(cname)
             scoped = (
-                [n for n in items if _news_belongs_to_competitor(n, cid, source_comp_map)]
+                [n for n in items if _news_belongs_to_competitor(n, cid, source_comp_map, competitors_by_id)]
                 if cid
                 else items
             )
