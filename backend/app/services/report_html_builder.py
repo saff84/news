@@ -174,7 +174,6 @@ def build_report_html(
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>{title}</title>
-  <script src="https://cdn.plot.ly/plotly-2.35.2.min.js"></script>
   <style>
     body {{ font-family: Inter, system-ui, -apple-system, Segoe UI, Roboto, Arial, sans-serif; margin: 0; background: #f8fafc; color: #0f172a; }}
     .wrap {{ max-width: 1200px; margin: 0 auto; padding: 24px; }}
@@ -234,6 +233,7 @@ def build_report_html(
     {_section_rich("Общие новости", processed_news, processed_news_json)}
     {'<section class="muted" style="padding:8px 2px 24px 2px">' + footer + '</section>' if footer else ''}
   </div>
+  <script src="/plotly-2.35.2.min.js"></script>
   <script>
     const cnyX = {_json(cny_x)};
     const cnyY = {_json(cny_y)};
