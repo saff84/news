@@ -120,7 +120,9 @@ def ingest_rss(db: Session, *, source: Source) -> dict[str, Any]:
 
         tags = tag_item(
             db,
-            text=search_text,
+            text=content_text or str(summary or ""),
+            title=str(title or ""),
+            match_text=search_text,
             source_region_ids=source.region_tags,
             source_competitor_id=source.competitor_id,
             source_developer_id=source.developer_id,

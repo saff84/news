@@ -142,7 +142,9 @@ def ingest_vk_group(db: Session, *, source: Source) -> dict[str, Any]:
         sh = simhash64(norm_text) if norm_text else None
         tags = tag_item(
             db,
-            text=search_text,
+            text=norm_text,
+            title=title,
+            match_text=search_text,
             source_region_ids=source.region_tags,
             source_competitor_id=source.competitor_id,
             source_developer_id=source.developer_id,

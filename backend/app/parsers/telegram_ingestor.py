@@ -120,7 +120,9 @@ async def _ingest_async(db: Session, *, source: Source) -> dict[str, Any]:
 
             tags = tag_item(
                 db,
-                text=search_text,
+                text=content_text or "",
+                title=title,
+                match_text=search_text,
                 source_region_ids=source.region_tags,
                 source_competitor_id=source.competitor_id,
                 source_developer_id=source.developer_id,
