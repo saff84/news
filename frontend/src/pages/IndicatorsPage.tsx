@@ -231,7 +231,6 @@ export function IndicatorsPage() {
   const [notCollectedYet, setNotCollectedYet] = useState(false);
 
   const [parsedNames, setParsedNames] = useState<string[]>([]);
-  const [parsedHistory, setParsedHistory] = useState<Record<string, Array<{ period: string; value: number; unit?: string | null }>>>({});
   const [parsedItems, setParsedItems] = useState<ParsedIndicatorOut[]>([]);
 
   const [importOpen, setImportOpen] = useState(false);
@@ -316,17 +315,6 @@ export function IndicatorsPage() {
             ]
         ).map((g) => ({ title: g.title, keywords: keywordsToText(g.keywords) })),
       });
-
-      const hist: Record<string, Array<{ period: string; value: number; unit?: string | null }>> = {};
-      for (const name of names) {
-        try {
-          const res = await api.indicators.parsedHistory(accessToken, name);
-          hist[name] = sortByPeriod(res.items);
-        } catch {
-          hist[name] = [];
-        }
-      }
-      setParsedHistory(hist);
     } catch (e: any) {
       const msg = e?.message || "Ошибка загрузки";
       setError(msg);
@@ -587,6 +575,19 @@ export function IndicatorsPage() {
   const removeParsedRow = (idx: number) => {
     setParsedRows((prev) => withAutoChangePct(prev.filter((_, i) => i !== idx)));
   };
+
+  const parsedHistoryByName = useMemo(() => {
+    const hist: Record<string, Array<{ period: string; value: number; unit?: string | null }>> = {};
+    for (const r of parsedItems) {
+      const name = r.indicator_name;
+      if (!hist[name]) hist[name] = [];
+      hist[name].push({ period: r.period, value: r.value, unit: r.unit });
+    }
+    for (const name of Object.keys(hist)) {
+      hist[name] = sortByPeriod(hist[name]);
+    }
+    return hist;
+  }, [parsedItems]);
 
   const autoChangeById = useMemo(() => {
     const map = new Map<string, number | null>();
@@ -1024,7 +1025,7 @@ export function IndicatorsPage() {
 
       {/* Parsed indicators — charts (2+ points) or single-value card */}
       {parsedNames.map((name) => {
-        const items = sortByPeriod(parsedHistory[name] || []);
+        const items = parsedHistoryByName[name] || [];
         const unit = items[0]?.unit;
         if (items.length >= 2) {
           return (

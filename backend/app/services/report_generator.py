@@ -511,12 +511,8 @@ def fetch_report_data(
         )
         parsed_indicators = (
             db.query(ParsedIndicator)
-            .filter(
-                ParsedIndicator.created_at >= dt_from,
-                ParsedIndicator.created_at <= dt_to,
-            )
-            .order_by(ParsedIndicator.indicator_name.asc(), ParsedIndicator.created_at.desc())
-            .limit(1000)
+            .order_by(ParsedIndicator.indicator_name.asc(), ParsedIndicator.created_at.asc())
+            .limit(5000)
             .all()
         )
 

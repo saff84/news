@@ -107,11 +107,12 @@ def get_parsed_indicator_history(
     rows = (
         db.query(ParsedIndicator)
         .filter(ParsedIndicator.indicator_name == indicator_name)
-        .limit(limit * 2)  # fetch extra, we'll sort and limit
         .all()
     )
     # Sort by parsed date (period strings like "24 июля 2022 г." are not sortable alphabetically)
-    sorted_rows = sorted(rows, key=lambda r: period_sort_key(r.period))[:limit]
+    sorted_rows = sorted(rows, key=lambda r: period_sort_key(r.period))
+    if len(sorted_rows) > limit:
+        sorted_rows = sorted_rows[-limit:]
     return {
         "indicator_name": indicator_name,
         "items": [{"period": r.period, "value": float(r.value), "unit": r.unit} for r in sorted_rows],
