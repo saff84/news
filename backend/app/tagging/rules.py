@@ -18,6 +18,30 @@ def text_for_entity_tagging(text: str) -> str:
     return _URL_RE.sub(" ", text or "").lower()
 
 
+def _geo_term_matches(text_lc: str, term: str) -> bool:
+    """Гео-термины: подстрока + основа для склонений (Самара → в Самаре)."""
+    t2 = (term or "").strip().lower()
+    if not t2:
+        return False
+    if len(t2) <= _SHORT_TERM_MAX_LEN:
+        pattern = rf"(?<![{_WORD_CHAR_CLASS}]){re.escape(t2)}(?![{_WORD_CHAR_CLASS}])"
+        return bool(re.search(pattern, text_lc, flags=re.IGNORECASE))
+    if t2 in text_lc:
+        return True
+    if len(t2) >= 4:
+        stem = t2[:-1]
+        pattern = rf"(?<![{_WORD_CHAR_CLASS}]){re.escape(stem)}"
+        return bool(re.search(pattern, text_lc, flags=re.IGNORECASE))
+    return False
+
+
+def _contains_any_geo(text_lc: str, terms: list[str]) -> bool:
+    for t in terms:
+        if _geo_term_matches(text_lc, t):
+            return True
+    return False
+
+
 def _term_matches(text_lc: str, term: str) -> bool:
     t2 = (term or "").strip().lower()
     if not t2:
@@ -51,6 +75,51 @@ def news_item_tagging_text(item: object) -> str:
             str(getattr(item, "snippet", "") or ""),
         ]
     )
+
+
+def region_search_terms(region: Region) -> list[str]:
+    return list(region.federal_subjects or []) + list(region.keywords or []) + list(region.geographic_aliases or [])
+
+
+def match_region_ids_from_text(text: str, regions: list[Region]) -> list[uuid.UUID]:
+    text_lc = text_for_entity_tagging(text)
+    out: list[uuid.UUID] = []
+    for r in regions:
+        if _contains_any_geo(text_lc, region_search_terms(r)):
+            out.append(r.id)
+    return out
+
+
+def resolve_region_ids(
+    text: str,
+    source_region_ids: list[uuid.UUID] | None,
+    regions: list[Region],
+) -> list[uuid.UUID]:
+    """
+    Регион из текста (субъекты/ключи/алиасы) имеет приоритет.
+    Теги источника — только если в тексте нет ни одного гео-совпадения.
+    """
+    from_text = match_region_ids_from_text(text, regions)
+    if from_text:
+        return from_text
+    return list(source_region_ids or [])
+
+
+def effective_region_ids(
+    item: object,
+    regions_by_id: dict[uuid.UUID, Region],
+    source_region_map: dict[uuid.UUID, list[uuid.UUID]],
+) -> list[uuid.UUID]:
+    """Актуальные region_ids для отчёта (пересчёт по тексту, без устаревших тегов источника)."""
+    text = news_item_tagging_text(item)
+    regions_list = list(regions_by_id.values())
+    from_text = match_region_ids_from_text(text, regions_list)
+    if from_text:
+        return from_text
+    source_id = getattr(item, "source_id", None)
+    if source_id:
+        return list(source_region_map.get(source_id) or [])
+    return []
 
 
 def filter_competitor_mentions(item: object, competitors_by_id: dict[uuid.UUID, Competitor]) -> list[uuid.UUID]:
@@ -89,11 +158,7 @@ def tag_item(
     text_lc = text_for_entity_tagging(text)
 
     regions = db.query(Region).filter(Region.is_active.is_(True)).all()
-    region_ids: set[uuid.UUID] = set(source_region_ids or [])
-    for r in regions:
-        terms = (r.federal_subjects or []) + (r.keywords or []) + (r.geographic_aliases or [])
-        if _contains_any(text_lc, terms):
-            region_ids.add(r.id)
+    region_ids_list = resolve_region_ids(text, source_region_ids, regions)
 
     competitors = db.query(Competitor).filter(Competitor.is_active.is_(True)).all()
     competitor_mentions: set[uuid.UUID] = set()
@@ -108,7 +173,7 @@ def tag_item(
             developer_mentions.add(d.id)
 
     return {
-        "region_ids": list(region_ids),
+        "region_ids": region_ids_list,
         "competitor_mentions": list(competitor_mentions),
         "developer_mentions": list(developer_mentions),
         "topic_tags": [],  # TODO: keyword sets

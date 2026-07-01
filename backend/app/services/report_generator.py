@@ -46,7 +46,11 @@ from app.services.report_section_render import (
     try_parse_report_section,
 )
 from app.services.general_news_themes import group_general_news_by_themes, normalize_general_news_themes
-from app.tagging.rules import filter_competitor_mentions, filter_developer_mentions
+from app.tagging.rules import (
+    effective_region_ids,
+    filter_competitor_mentions,
+    filter_developer_mentions,
+)
 from app.services.report_section_settings import (
     REGION_UNASSIGNED_LABEL,
     ReportSectionSettings,
@@ -301,19 +305,26 @@ def _simple_news_summary_linked(items: list, *, title: str) -> str:
     return "\n".join(lines)
 
 
-def _load_source_entity_maps(db: Session, news: list) -> tuple[dict[uuid.UUID, uuid.UUID], dict[uuid.UUID, uuid.UUID]]:
-    """developer_id / competitor_id с карточки источника (для старых новостей без поля на записи)."""
+def _load_source_entity_maps(
+    db: Session, news: list
+) -> tuple[dict[uuid.UUID, uuid.UUID], dict[uuid.UUID, uuid.UUID], dict[uuid.UUID, list[uuid.UUID]]]:
+    """developer_id / competitor_id / region_tags с карточки источника."""
     source_ids = {n.source_id for n in news if n.source_id}
     if not source_ids:
-        return {}, {}
+        return {}, {}, {}
     rows = (
-        db.query(Source.id, Source.developer_id, Source.competitor_id)
+        db.query(Source.id, Source.developer_id, Source.competitor_id, Source.region_tags)
         .filter(Source.id.in_(source_ids))
         .all()
     )
     dev_map = {r.id: r.developer_id for r in rows if r.developer_id}
     comp_map = {r.id: r.competitor_id for r in rows if r.competitor_id}
-    return dev_map, comp_map
+    region_map = {r.id: list(r.region_tags or []) for r in rows if r.region_tags}
+    return dev_map, comp_map, region_map
+
+
+def _active_regions_by_id(db: Session) -> dict[uuid.UUID, Region]:
+    return {r.id: r for r in db.query(Region).filter(Region.is_active.is_(True)).all()}
 
 
 def _primary_developer_id(n: NewsItem, source_dev_map: dict[uuid.UUID, uuid.UUID]) -> uuid.UUID | None:
@@ -453,11 +464,17 @@ def _group_developer_news(
     return dict(out)
 
 
-def _group_region_news(news: list, region_map: dict[str, str]) -> dict[str, list]:
+def _group_region_news(
+    news: list,
+    region_map: dict[str, str],
+    regions_by_id: dict[uuid.UUID, Region],
+    source_region_map: dict[uuid.UUID, list[uuid.UUID]],
+) -> dict[str, list]:
     out: dict[str, list] = defaultdict(list)
     for n in news:
-        if n.region_ids:
-            for rid in n.region_ids:
+        rids = effective_region_ids(n, regions_by_id, source_region_map)
+        if rids:
+            for rid in rids:
                 out[region_map.get(str(rid), str(rid))].append(n)
         else:
             out["Без региона"].append(n)
@@ -564,9 +581,10 @@ def get_report_data_for_pdf(
     news = raw["news"]
     regions_list = raw["regions"]
     region_map = {str(r.id): r.name for r in regions_list}
-    source_dev_map, source_comp_map = _load_source_entity_maps(db, news)
+    source_dev_map, source_comp_map, source_region_map = _load_source_entity_maps(db, news)
     competitors_by_id = _active_competitors_by_id(db)
     developers_by_id = _active_developers_by_id(db)
+    regions_by_id = _active_regions_by_id(db)
 
     source_ids = {n.source_id for n in news if n.source_id}
     sources_map: dict[str, str] = {}
@@ -653,8 +671,9 @@ def get_report_data_for_pdf(
         if settings.include_region_unassigned:
             news_by_region[REGION_UNASSIGNED_LABEL] = []
         for n in news:
-            if n.region_ids:
-                for rid in n.region_ids:
+            rids = effective_region_ids(n, regions_by_id, source_region_map)
+            if rids:
+                for rid in rids:
                     rid_s = str(rid)
                     if rid_s in settings.disabled_region_ids:
                         continue
@@ -917,9 +936,10 @@ def generate_report(
             return f"[Ошибка ИИ: {err}]", None
 
     all_news = raw["news"]
-    source_dev_map, source_comp_map = _load_source_entity_maps(db, all_news)
+    source_dev_map, source_comp_map, source_region_map = _load_source_entity_maps(db, all_news)
     competitors_by_id = _active_competitors_by_id(db)
     developers_by_id = _active_developers_by_id(db)
+    regions_by_id = _active_regions_by_id(db)
 
     competitor_news = [n for n in all_news if _is_competitor_news(n, source_comp_map, competitors_by_id)]
     developer_news = [n for n in all_news if _is_developer_news(n, source_dev_map, developers_by_id)]
@@ -969,7 +989,11 @@ def generate_report(
         developer_groups.setdefault(name, empty)
     competitor_groups = filter_competitor_groups(competitor_groups, competitor_names_map, section_settings)
     developer_groups = filter_developer_groups(developer_groups, developer_names_map, section_settings)
-    region_groups = filter_region_groups(_group_region_news(all_news, region_map), region_map, section_settings)
+    region_groups = filter_region_groups(
+        _group_region_news(all_news, region_map, regions_by_id, source_region_map),
+        region_map,
+        section_settings,
+    )
 
     if not section_settings.include_general_news:
         general_news = []
@@ -1159,11 +1183,20 @@ def generate_report(
 
     if section_settings.include_regions:
         prompt_reg = (ai_cfg.get("prompt_regions") or "").strip()
+        region_id_by_name = {v: uuid.UUID(k) for k, v in region_map.items()}
         for rname, items in sorted(region_groups.items()):
             if not items:
                 continue
+            rid = region_id_by_name.get(rname)
+            scoped = (
+                [n for n in items if rid and rid in effective_region_ids(n, regions_by_id, source_region_map)]
+                if rid
+                else items
+            )
+            if not scoped:
+                continue
             entity_data = _serialize_news_for_ai(
-                items,
+                scoped,
                 section_subject=rname,
                 max_chars=AI_NEWS_DATA_BUDGET_CHARS,
             )
@@ -1178,7 +1211,7 @@ def generate_report(
                 if payload is not None:
                     result["processed_regions_by_name_json"][rname] = payload
             else:
-                result["processed_regions_by_name"][rname] = _simple_news_summary_linked(items, title=f"Регион {rname}")
+                result["processed_regions_by_name"][rname] = _simple_news_summary_linked(scoped, title=f"Регион {rname}")
 
     # Кластеры похожих новостей (главная новость входит в выборку отчёта)
     if section_settings.include_clusters and all_news:
