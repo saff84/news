@@ -48,6 +48,14 @@ function parseThemeKeywords(raw: string): string[] {
     .filter(Boolean);
 }
 
+/** YYYY-MM — предыдущий календарный месяц (для отчёта за прошлый месяц). */
+function defaultReportMonth(): string {
+  const d = new Date();
+  d.setDate(1);
+  d.setMonth(d.getMonth() - 1);
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}`;
+}
+
 function themesFromApi(items: Array<{ title: string; keywords: string[] }> | undefined): GeneralNewsThemeForm[] {
   if (!items?.length) return DEFAULT_GENERAL_NEWS_THEMES;
   return items.map((g) => ({
@@ -325,7 +333,7 @@ export function ReportConfigPage() {
     disabled_developer_ids: [],
     disabled_region_ids: [],
     date_range_days: 30,
-    report_month: null,
+    report_month: defaultReportMonth(),
     general_news_themes: DEFAULT_GENERAL_NEWS_THEMES,
   });
   const [competitors, setCompetitors] = useState<CompetitorOut[]>([]);
@@ -392,7 +400,7 @@ export function ReportConfigPage() {
         disabled_developer_ids: c.disabled_developer_ids ?? [],
         disabled_region_ids: c.disabled_region_ids ?? [],
         date_range_days: c.date_range_days,
-        report_month: c.report_month ?? null,
+        report_month: c.report_month ?? defaultReportMonth(),
         general_news_themes: themesFromApi(c.general_news_themes),
       });
     } catch (e: unknown) {
