@@ -459,10 +459,18 @@ export function CompetitorTelegramPage() {
                 </div>
               </div>
 
-              {summary?.summary_text ? (
+              {summary?.summary_html || summary?.summary_text ? (
                 <div className="rounded border bg-white p-4">
                   <h3 className="text-sm font-semibold text-slate-800">Превью саммари</h3>
-                  <pre className="mt-2 max-h-48 overflow-auto whitespace-pre-wrap text-xs text-slate-700">{summary.summary_text.slice(0, 3000)}</pre>
+                  <p className="mt-1 text-xs text-slate-500">Тот же контент, что на странице «Страница»</p>
+                  {summary.summary_html ? (
+                    <div
+                      className="summary rich structured mt-3 max-h-96 overflow-auto text-sm leading-relaxed [&_.sec-headline]:mb-2 [&_.sec-headline]:text-base [&_.sec-headline]:font-semibold [&_.sec-subtheme]:mb-2 [&_.sec-subtheme]:mt-4 [&_.sec-subtheme]:font-semibold [&_.sec-bullets]:list-disc [&_.sec-bullets]:pl-5 [&_.sec-bullets_a]:text-blue-600 [&_.sec-bullets_a]:underline [&_.sec-lead]:mb-3 [&_.sec-closing]:mt-4 [&_.sec-closing]:text-slate-600 [&_a]:text-blue-600 [&_a]:underline [&_p]:mb-2"
+                      dangerouslySetInnerHTML={{ __html: summary.summary_html }}
+                    />
+                  ) : (
+                    <pre className="mt-2 max-h-96 overflow-auto whitespace-pre-wrap text-xs text-slate-700">{summary.summary_text?.slice(0, 8000)}</pre>
+                  )}
                 </div>
               ) : null}
 

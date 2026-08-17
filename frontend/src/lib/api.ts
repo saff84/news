@@ -86,6 +86,7 @@ export type CompetitorTelegramSummaryOut = {
   status: string;
   summary_text: string | null;
   summary_json: Record<string, unknown>;
+  summary_html: string | null;
   posts_count: number;
   period_from: string | null;
   period_to: string | null;

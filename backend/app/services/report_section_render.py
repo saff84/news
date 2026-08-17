@@ -55,6 +55,31 @@ def _normalize_section_data(data: dict[str, Any]) -> dict[str, Any]:
                 cites = b.get("citations") if isinstance(b.get("citations"), list) else []
                 norm.append({"text": t, "citations": cites})
         out["bullets"] = norm
+    subs = out.get("subsections")
+    if isinstance(subs, list):
+        norm_subs: list[dict[str, Any]] = []
+        for sub in subs:
+            if not isinstance(sub, dict):
+                continue
+            title = strip_report_emojis(str(sub.get("title") or ""))
+            sub_paragraphs = [
+                strip_report_emojis(str(p)) for p in (sub.get("paragraphs") or []) if strip_report_emojis(str(p))
+            ]
+            sub_bullets: list[dict[str, Any]] = []
+            for b in sub.get("bullets") or []:
+                if isinstance(b, str):
+                    t = strip_report_emojis(b)
+                    if t:
+                        sub_bullets.append({"text": t, "citations": []})
+                elif isinstance(b, dict):
+                    t = strip_report_emojis(str(b.get("text") or ""))
+                    if not t:
+                        continue
+                    cites = b.get("citations") if isinstance(b.get("citations"), list) else []
+                    sub_bullets.append({"text": t, "citations": cites})
+            if title or sub_paragraphs or sub_bullets:
+                norm_subs.append({"title": title, "paragraphs": sub_paragraphs, "bullets": sub_bullets})
+        out["subsections"] = norm_subs
     for key in ("headline", "lead", "closing"):
         if out.get(key) is not None:
             out[key] = strip_report_emojis(str(out[key])) or None
@@ -200,6 +225,22 @@ def sanitize_section_dict(d: dict[str, Any]) -> dict[str, Any]:
     return _normalize_section_data(d)
 
 
+def _bullet_markdown_line(b: dict[str, Any]) -> str | None:
+    t = str(b.get("text") or "").strip()
+    if not t:
+        return None
+    cites = b.get("citations") or []
+    link_bits: list[str] = []
+    for c in cites:
+        if not isinstance(c, dict):
+            continue
+        url = (c.get("url") or "").strip()
+        lab = (c.get("label") or "источник").strip()
+        if url:
+            link_bits.append(f"[{lab}]({url})")
+    return "- " + t + (" " + " ".join(link_bits) if link_bits else "")
+
+
 def section_dict_to_markdown(d: dict[str, Any]) -> str:
     """Плоское текстовое представление (fallback для API и старых клиентов)."""
     d = sanitize_section_dict(d)
@@ -214,19 +255,9 @@ def section_dict_to_markdown(d: dict[str, Any]) -> str:
     for b in d.get("bullets") or []:
         if not isinstance(b, dict):
             continue
-        t = str(b.get("text") or "").strip()
-        if not t:
-            continue
-        cites = b.get("citations") or []
-        link_bits: list[str] = []
-        for c in cites:
-            if not isinstance(c, dict):
-                continue
-            url = (c.get("url") or "").strip()
-            lab = (c.get("label") or "источник").strip()
-            if url:
-                link_bits.append(f"[{lab}]({url})")
-        parts.append("- " + t + (" " + " ".join(link_bits) if link_bits else ""))
+        line = _bullet_markdown_line(b)
+        if line:
+            parts.append(line)
     for sub in d.get("subsections") or []:
         if not isinstance(sub, dict):
             continue
@@ -239,10 +270,9 @@ def section_dict_to_markdown(d: dict[str, Any]) -> str:
         for b in sub.get("bullets") or []:
             if not isinstance(b, dict):
                 continue
-            t = str(b.get("text") or "").strip()
-            if not t:
-                continue
-            parts.append(f"- {t}")
+            line = _bullet_markdown_line(b)
+            if line:
+                parts.append(line)
     if d.get("closing"):
         parts.append(str(d["closing"]))
     return "\n\n".join(parts) if parts else ""

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import datetime as dt
+import re
 import uuid
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
@@ -14,6 +15,7 @@ from app.db import get_db
 from app.models.auth import Role, User
 from app.models.domain import Competitor, CompetitorTelegramPost, CompetitorTelegramProfile, CompetitorTelegramSummary
 from app.services.competitor_summary_service import generate_competitor_summary, purge_competitor_posts
+from app.services.report_section_render import render_section_inner_html
 from app.services.telegram_config import get_telegram_config
 from app.services.telegram_errors import humanize_telegram_error, telegram_readiness
 from app.workers.jobs import competitor_tg_collect_job
@@ -84,6 +86,7 @@ class SummaryOut(BaseModel):
     status: str
     summary_text: str | None
     summary_json: dict
+    summary_html: str | None = None
     posts_count: int
     period_from: str | None
     period_to: str | None
@@ -91,6 +94,34 @@ class SummaryOut(BaseModel):
     approved_at: str | None
     created_at: str
     updated_at: str
+
+
+def _summary_render_payload(summary_json: dict | None) -> dict:
+    raw = summary_json or {}
+    return {k: v for k, v in raw.items() if not str(k).startswith("_")}
+
+
+def _summary_to_out(summary: CompetitorTelegramSummary) -> SummaryOut:
+    payload = _summary_render_payload(summary.summary_json)
+    summary_html = render_section_inner_html(text=summary.summary_text, payload=payload or None)
+    if summary_html.startswith("<div"):
+        m = re.search(r"<div[^>]*>(.*)</div>\s*$", summary_html, re.DOTALL)
+        summary_html = m.group(1) if m else summary_html
+    return SummaryOut(
+        id=str(summary.id),
+        profile_id=str(summary.profile_id),
+        status=summary.status,
+        summary_text=summary.summary_text,
+        summary_json=summary.summary_json or {},
+        summary_html=summary_html or None,
+        posts_count=summary.posts_count,
+        period_from=summary.period_from.isoformat() if summary.period_from else None,
+        period_to=summary.period_to.isoformat() if summary.period_to else None,
+        html_path=summary.html_path,
+        approved_at=summary.approved_at.isoformat() if summary.approved_at else None,
+        created_at=summary.created_at.isoformat() if summary.created_at else "",
+        updated_at=summary.updated_at.isoformat() if summary.updated_at else "",
+    )
 
 
 def _parse_date(raw: str | None) -> dt.date | None:
@@ -333,20 +364,7 @@ def summarize_profile(
         raise HTTPException(status_code=400, detail=str(e))
     except Exception as e:
         raise HTTPException(status_code=502, detail=f"Ошибка ИИ: {e!s}")
-    return SummaryOut(
-        id=str(summary.id),
-        profile_id=str(summary.profile_id),
-        status=summary.status,
-        summary_text=summary.summary_text,
-        summary_json=summary.summary_json or {},
-        posts_count=summary.posts_count,
-        period_from=summary.period_from.isoformat() if summary.period_from else None,
-        period_to=summary.period_to.isoformat() if summary.period_to else None,
-        html_path=summary.html_path,
-        approved_at=summary.approved_at.isoformat() if summary.approved_at else None,
-        created_at=summary.created_at.isoformat() if summary.created_at else "",
-        updated_at=summary.updated_at.isoformat() if summary.updated_at else "",
-    )
+    return _summary_to_out(summary)
 
 
 @router.get("/profiles/{profile_id}/summary", response_model=SummaryOut | None)
@@ -361,20 +379,7 @@ def get_summary(
     summary = _latest_summary(db, profile_id)
     if not summary:
         return None
-    return SummaryOut(
-        id=str(summary.id),
-        profile_id=str(summary.profile_id),
-        status=summary.status,
-        summary_text=summary.summary_text,
-        summary_json=summary.summary_json or {},
-        posts_count=summary.posts_count,
-        period_from=summary.period_from.isoformat() if summary.period_from else None,
-        period_to=summary.period_to.isoformat() if summary.period_to else None,
-        html_path=summary.html_path,
-        approved_at=summary.approved_at.isoformat() if summary.approved_at else None,
-        created_at=summary.created_at.isoformat() if summary.created_at else "",
-        updated_at=summary.updated_at.isoformat() if summary.updated_at else "",
-    )
+    return _summary_to_out(summary)
 
 
 @router.post("/profiles/{profile_id}/approve-summary")
