@@ -33,6 +33,38 @@ _PROMPT_PRODUCT_GUARD = """
 - Если такие факты есть во входных «Данные», каждый из них должен быть явно отражён в bullets/subsections с датой или ссылкой на пост.
 - Не сокращай саммари за счёт продуктовых анонсов ради «общей картины» — продукт и ассортимент приоритетны наравне с PR и финансами."""
 
+_PROMPT_BATCH_EXTRACT = """
+Режим: промежуточная выжимка части архива (не финальный отчёт для руководства).
+- Сгруппируй факты по темам (продукт, маркетинг, компания, риски), а не по датам.
+- НЕ делай хронологический перечень «DD.MM — событие».
+- Сохрани все продуктовые анонсы и артикулы из данных.
+JSON: subsections с title, paragraphs (кратко) и bullets с citations."""
+
+_PROMPT_SYNTHESIS = """Ты — стратегический аналитик конкурентной среды в девелопменте и строительной отрасли.
+На входе — черновая выжимка по постам Telegram-канала одного конкурента за длительный период.
+Переработай её в развёрнутую аналитическую справку для руководства.
+
+ЗАПРЕЩЕНО:
+- хронологический журнал событий («17.08 — X, 24.08 — Y»);
+- структура «по периодам» или «часть 1 / часть 2» — объедини в единый тематический отчёт;
+- однострочные bullets без аналитики — каждый раздел начинается с абзаца-интерпретации;
+- выбрасывать новинки ассортимента и продуктовые анонсы из черновика.
+
+ОБЯЗАТЕЛЬНО:
+1) lead — 4–6 предложений: стратегическая картина периода, чем конкурент отличается, куда движется.
+2) subsections — только темы, где есть факты (рекомендуемые title):
+   • «Продукт и ассортимент» — все новинки, артикулы, расширения линейки; сгруппируй по направлениям, не теряя конкретику;
+   • «Маркетинг и продажи» — акции, цены, каналы, мероприятия, коммуникации;
+   • «Развитие компании» — география, склады, партнёрства, кадры, стратегические шаги;
+   • «Репутация и риски» — если есть;
+   • «Динамика и тренды» — что изменилось во времени, устойчивые паттерны.
+   В каждом разделе: paragraphs (2–4 предложения анализа) + bullets (ключевые факты с [ссылками](URL) из черновика).
+3) closing — главный вывод за период + 2–3 пункта «что мониторить дальше».
+4) Сигнал для нас: нейтрально / давление / возможность — одним абзацем в closing или отдельным bullet.
+
+Ограничения: только факты из черновика; не выдумывай; русский, деловой стиль.
+JSON: headline, lead, subsections[{title, paragraphs, bullets}], closing."""
+
 
 def _post_date_range(batch: list[CompetitorTelegramPost]) -> tuple[str, str]:
     dates = [p.published_at for p in batch if p.published_at]
@@ -53,6 +85,7 @@ def _batch_header_lines(
         f"Часть {batch_index} из {batch_total}. Постов в части: {len(batch)}. Период части: {d0} — {d1}.",
         f"Всего постов в архиве: {total_posts}.",
         "Обязательно отрази запуски проектов, новинки ассортимента, планировки, цены и акции — если они есть в этой части.",
+        "Не составляй хронологический список по датам — группируй по темам.",
     ]
 
 
@@ -130,6 +163,53 @@ def _split_posts_for_ai(
     if current:
         batches.append(current)
     return batches if batches else [sorted_posts]
+
+
+def _draft_for_synthesis(batch_results: list[tuple[str, dict[str, Any]]]) -> str:
+    """Плоский черновик без хронологических подразделов — вход для финального синтеза."""
+    payloads = [sanitize_section_dict(p) for _, p in batch_results if isinstance(p, dict) and p]
+    if not payloads:
+        return ""
+    if len(payloads) == 1:
+        return section_dict_to_markdown(payloads[0])
+
+    merged = merge_report_section_payloads(payloads)
+    extra_bullets: list[dict[str, Any]] = []
+    extra_paragraphs: list[str] = []
+    for payload in payloads:
+        for sub in payload.get("subsections") or []:
+            if not isinstance(sub, dict):
+                continue
+            extra_paragraphs.extend(str(p).strip() for p in (sub.get("paragraphs") or []) if str(p).strip())
+            for b in sub.get("bullets") or []:
+                if isinstance(b, dict) and str(b.get("text") or "").strip():
+                    extra_bullets.append(b)
+        extra_paragraphs.extend(str(p).strip() for p in (payload.get("paragraphs") or []) if str(p).strip())
+        for b in payload.get("bullets") or []:
+            if isinstance(b, dict) and str(b.get("text") or "").strip():
+                extra_bullets.append(b)
+
+    seen: set[str] = set()
+    for b in merged.get("bullets") or []:
+        if isinstance(b, dict):
+            key = str(b.get("text") or "").lower()[:160]
+            seen.add(key)
+    for b in extra_bullets:
+        key = str(b.get("text") or "").lower()[:160]
+        if key and key not in seen:
+            seen.add(key)
+            merged.setdefault("bullets", []).append(b)
+
+    for p in extra_paragraphs:
+        if p not in (merged.get("paragraphs") or []):
+            merged.setdefault("paragraphs", []).append(p)
+
+    return section_dict_to_markdown(merged)
+
+
+def _merge_batch_drafts(batch_results: list[tuple[str, dict[str, Any]]]) -> str:
+    """Alias для совместимости."""
+    return _draft_for_synthesis(batch_results)
 
 
 def _merge_competitor_tg_batch_payloads(
@@ -266,6 +346,7 @@ def generate_competitor_summary(db: Session, profile: CompetitorTelegramProfile)
     fallback_texts: list[str] = []
     total_truncated = 0
     chars_sent = 0
+    multi_batch = len(batches) > 1
 
     for bi, batch in enumerate(batches, 1):
         header = (
@@ -275,7 +356,7 @@ def generate_competitor_summary(db: Session, profile: CompetitorTelegramProfile)
                 batch=batch,
                 total_posts=len(posts),
             )
-            if len(batches) > 1
+            if multi_batch
             else None
         )
         data, truncated = _serialize_posts_batch(batch, subject=cname, header_lines=header)
@@ -284,12 +365,16 @@ def generate_competitor_summary(db: Session, profile: CompetitorTelegramProfile)
             data = data[: AI_BUDGET - 40] + "\n\n[... обрезано по лимиту контекста ...]"
         chars_sent += len(data)
 
+        batch_prompt = prompt
+        if multi_batch:
+            batch_prompt = f"{prompt.rstrip()}\n{_PROMPT_BATCH_EXTRACT}"
+
         pause_before_ai_call(runtime.request_delay_seconds, label=f"competitor-tg:{cname}:{bi}")
         text, payload = _process_ai_report_section(
             provider=runtime.provider,
             api_key=runtime.api_key,
             model=runtime.model,
-            prompt=prompt,
+            prompt=batch_prompt,
             data=data,
             log_label=f"competitor-tg:{cname}:{bi}",
             max_retries=runtime.max_retries,
@@ -299,17 +384,10 @@ def generate_competitor_summary(db: Session, profile: CompetitorTelegramProfile)
             payload = try_parse_report_section(text)
         if payload:
             d0, d1 = _post_date_range(batch)
-            label = f"{d0} — {d1}" if len(batches) > 1 else (payload.get("headline") or cname)
+            label = f"{d0} — {d1}" if multi_batch else (payload.get("headline") or cname)
             batch_results.append((str(label), payload))
         if text:
             fallback_texts.append(text)
-
-    if batch_results:
-        combined_json = _merge_competitor_tg_batch_payloads(batch_results)
-        combined_text = section_dict_to_markdown(combined_json)
-    else:
-        combined_json = {}
-        combined_text = "\n\n".join(t for t in fallback_texts if t)
 
     period_from = None
     period_to = None
@@ -318,6 +396,51 @@ def generate_competitor_summary(db: Session, profile: CompetitorTelegramProfile)
         period_from = min(dates)
         period_to = max(dates)
 
+    pf = period_from.strftime("%d.%m.%Y") if period_from else "—"
+    pt = period_to.strftime("%d.%m.%Y") if period_to else "—"
+    synthesis_pass = False
+    synthesis_failed = False
+
+    if batch_results:
+        draft_text = _draft_for_synthesis(batch_results)
+        synthesis_data = (
+            f"Конкурент: «{cname}»\n"
+            f"Период: {pf} — {pt}\n"
+            f"Постов в архиве: {len(posts)}\n\n"
+            f"--- Черновая выжимка ---\n\n{draft_text}"
+        )
+        chars_sent += len(synthesis_data)
+        synthesis_prompt = f"{_PROMPT_SYNTHESIS.rstrip()}\n{_PROMPT_PRODUCT_GUARD}"
+        pause_before_ai_call(runtime.request_delay_seconds, label=f"competitor-tg:{cname}:synthesis")
+        synth_text, synth_payload = _process_ai_report_section(
+            provider=runtime.provider,
+            api_key=runtime.api_key,
+            model=runtime.model,
+            prompt=synthesis_prompt,
+            data=synthesis_data,
+            log_label=f"competitor-tg:{cname}:synthesis",
+            max_retries=runtime.max_retries,
+            retry_base_seconds=runtime.retry_base_seconds,
+        )
+        if synth_payload is None and synth_text and not str(synth_text).startswith("[Ошибка ИИ"):
+            synth_payload = try_parse_report_section(synth_text)
+        if synth_payload:
+            combined_json = synth_payload
+            combined_text = section_dict_to_markdown(synth_payload)
+            synthesis_pass = True
+        elif synth_text and not str(synth_text).startswith("[Ошибка ИИ") and str(synth_text).strip():
+            combined_text = str(synth_text).strip()
+            combined_json = try_parse_report_section(combined_text) or {}
+            synthesis_pass = bool(combined_json)
+            synthesis_failed = not synthesis_pass
+        else:
+            synthesis_failed = True
+            combined_json = _merge_competitor_tg_batch_payloads(batch_results)
+            combined_text = section_dict_to_markdown(combined_json) if combined_json else "\n\n".join(fallback_texts)
+    else:
+        combined_json = {}
+        combined_text = "\n\n".join(t for t in fallback_texts if t)
+
     inner = render_section_inner_html(text=combined_text, payload=combined_json or None)
     if not inner:
         inner = f"<div class='summary rich'><p>{escape(combined_text or 'Пустой ответ ИИ')}</p></div>"
@@ -325,6 +448,10 @@ def generate_competitor_summary(db: Session, profile: CompetitorTelegramProfile)
     meta_parts: list[str] = []
     if len(batches) > 1:
         meta_parts.append(f"Частей для ИИ: {len(batches)}")
+    if synthesis_pass:
+        meta_parts.append("Финальный аналитический синтез")
+    elif synthesis_failed:
+        meta_parts.append("Синтез не удался — показан черновик по частям")
     if total_truncated:
         meta_parts.append(f"Постов с усечённым текстом: {total_truncated} (до {DEFAULT_SNIPPET_CHARS} симв.)")
     meta_note = ". ".join(meta_parts) if meta_parts else None
@@ -350,6 +477,8 @@ def generate_competitor_summary(db: Session, profile: CompetitorTelegramProfile)
         "posts_text_truncated": total_truncated,
         "snippet_chars": DEFAULT_SNIPPET_CHARS,
         "chars_sent_to_ai": chars_sent,
+        "synthesis_pass": synthesis_pass,
+        "synthesis_failed": synthesis_failed,
     }
 
     summary = (

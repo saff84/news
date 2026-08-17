@@ -967,6 +967,7 @@ export const api = {
       payload: Partial<{
         provider: string;
         api_key: string;
+        clear_api_key: boolean;
         model: string;
         ai_request_delay_seconds: number;
         ai_max_retries: number;

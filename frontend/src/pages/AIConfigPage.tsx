@@ -104,6 +104,7 @@ export function AIConfigPage() {
   const [modelCustom, setModelCustom] = useState(false);
   const [saveBusy, setSaveBusy] = useState(false);
   const [saveSuccess, setSaveSuccess] = useState(false);
+  const [clearApiKey, setClearApiKey] = useState(false);
   const [testBusy, setTestBusy] = useState(false);
   const [testResult, setTestResult] = useState<{
     ok: boolean;
@@ -121,6 +122,7 @@ export function AIConfigPage() {
     try {
       const c = await api.aiConfig.get(accessToken);
       setConfig(c);
+      setClearApiKey(false);
       const currentProvider = (c.provider || "openrouter").toLowerCase();
       const presetModels = currentProvider === "routerai" ? ROUTERAI_MODELS : OPENROUTER_MODELS;
       const isPreset = presetModels.some((m) => m.id === c.model);
@@ -172,8 +174,11 @@ export function AIConfigPage() {
         prompt_regions: form.prompt_regions,
         prompt_clusters: form.prompt_clusters,
       };
-      // Only send api_key when user changed it (typed new or cleared)
-      if (form.api_key !== "" || form.api_key_set) payload.api_key = form.api_key;
+      if (clearApiKey) {
+        payload.clear_api_key = true;
+      } else if (form.api_key.trim() !== "") {
+        payload.api_key = form.api_key.trim();
+      }
       await api.aiConfig.update(accessToken, payload);
       setSaveSuccess(true);
       reload();
@@ -264,7 +269,10 @@ export function AIConfigPage() {
               type="password"
               className="mt-1 w-full max-w-md rounded border px-3 py-2 font-mono text-sm"
               value={form.api_key}
-              onChange={(e) => setForm((f) => ({ ...f, api_key: e.target.value }))}
+              onChange={(e) => {
+                setClearApiKey(false);
+                setForm((f) => ({ ...f, api_key: e.target.value }));
+              }}
               placeholder={form.api_key_set ? "Ключ сохранён — введите новый, чтобы заменить" : provider === "routerai" ? "ra_..." : "sk-or-v1-..."}
               disabled={!isAdmin}
               autoComplete="off"
@@ -274,7 +282,10 @@ export function AIConfigPage() {
             <button
               type="button"
               className="rounded border border-slate-300 bg-white px-3 py-2 text-sm text-slate-700 hover:bg-slate-50"
-              onClick={() => setForm((f) => ({ ...f, api_key: "" }))}
+              onClick={() => {
+                setForm((f) => ({ ...f, api_key: "" }));
+                setClearApiKey(true);
+              }}
             >
               Удалить ключ
             </button>
@@ -390,7 +401,7 @@ export function AIConfigPage() {
                     ai_request_delay_seconds: form.ai_request_delay_seconds,
                     ai_max_retries: form.ai_max_retries,
                     ai_retry_base_seconds: form.ai_retry_base_seconds,
-                    ...(form.api_key !== "" || form.api_key_set ? { api_key: form.api_key } : {}),
+                    ...(form.api_key.trim() !== "" ? { api_key: form.api_key.trim() } : {}),
                   });
                 }
                 const r = await api.aiConfig.test(accessToken);

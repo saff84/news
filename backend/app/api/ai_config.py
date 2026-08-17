@@ -47,6 +47,7 @@ class AIConfigUpdateIn(BaseModel):
     prompt_indicators: str | None = Field(default=None, max_length=10000)
     prompt_regions: str | None = Field(default=None, max_length=10000)
     prompt_clusters: str | None = Field(default=None, max_length=10000)
+    clear_api_key: bool | None = None
 
 
 def _to_out(cfg: dict[str, Any]) -> AIConfigOut:
@@ -91,6 +92,7 @@ def update_config(
 ) -> AIConfigOut:
     """Update AI config (Admin only)."""
     kwargs = payload.model_dump(exclude_unset=True)
+    clear_api_key = bool(kwargs.pop("clear_api_key", False))
     if "provider" in kwargs and kwargs["provider"] is not None:
         provider = str(kwargs["provider"]).strip().lower()
         if provider not in {"openrouter", "routerai"}:
@@ -99,9 +101,14 @@ def update_config(
                 detail="provider must be one of: openrouter, routerai",
             )
         kwargs["provider"] = provider
-    # Empty string = clear api_key
-    if "api_key" in kwargs:
-        kwargs["api_key"] = kwargs["api_key"] or None
+    if clear_api_key:
+        kwargs["api_key"] = None
+    elif "api_key" in kwargs:
+        key_val = (kwargs.get("api_key") or "").strip()
+        if key_val:
+            kwargs["api_key"] = key_val
+        else:
+            del kwargs["api_key"]
     save_ai_config(db, **kwargs)
     cfg = get_ai_config(db)
     return _to_out(cfg)
