@@ -300,6 +300,76 @@ class IndicatorTelegramPost(Base, UUIDPrimaryKeyMixin):
     )
 
 
+class CompetitorTelegramProfile(Base, UUIDPrimaryKeyMixin, TimestampMixin):
+    """TG-канал конкурента для разового/глубокого парсинга и AI-саммари."""
+
+    __tablename__ = "competitor_telegram_profiles"
+
+    competitor_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("competitors.id", ondelete="CASCADE"), nullable=False, unique=True, index=True
+    )
+    tg_channel_username: Mapped[str] = mapped_column(String(128), nullable=False)
+    include_keywords: Mapped[list[str]] = mapped_column(ARRAY(String(200)), nullable=False, default=list)
+    exclude_keywords: Mapped[list[str]] = mapped_column(ARRAY(String(200)), nullable=False, default=list)
+    match_whole_words: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    backfill_until_date: Mapped[date | None] = mapped_column(Date, nullable=True)
+    last_message_id: Mapped[int] = mapped_column(BigInteger, nullable=False, default=0)
+    backfill_complete: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    backfill_cursor_date: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    last_fetch_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    last_error: Mapped[str | None] = mapped_column(Text, nullable=True)
+    is_active: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
+
+    competitor: Mapped["Competitor"] = relationship("Competitor")  # type: ignore[name-defined]
+    posts: Mapped[list["CompetitorTelegramPost"]] = relationship(  # type: ignore[name-defined]
+        "CompetitorTelegramPost", back_populates="profile", cascade="all, delete-orphan"
+    )
+    summaries: Mapped[list["CompetitorTelegramSummary"]] = relationship(  # type: ignore[name-defined]
+        "CompetitorTelegramSummary", back_populates="profile", cascade="all, delete-orphan"
+    )
+
+
+class CompetitorTelegramPost(Base, UUIDPrimaryKeyMixin):
+    """Пост из TG-канала конкурента (staging до проверки саммари)."""
+
+    __tablename__ = "competitor_telegram_posts"
+
+    profile_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("competitor_telegram_profiles.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    message_id: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    post_url: Mapped[str] = mapped_column(Text, nullable=False)
+    text: Mapped[str | None] = mapped_column(Text)
+    published_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), index=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=func.now())
+
+    profile: Mapped["CompetitorTelegramProfile"] = relationship("CompetitorTelegramProfile", back_populates="posts")  # type: ignore[name-defined]
+
+    __table_args__ = (
+        UniqueConstraint("profile_id", "message_id", name="uq_competitor_tg_posts_profile_message"),
+    )
+
+
+class CompetitorTelegramSummary(Base, UUIDPrimaryKeyMixin, TimestampMixin):
+    """AI-саммари по спарсенным постам конкурента."""
+
+    __tablename__ = "competitor_telegram_summaries"
+
+    profile_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("competitor_telegram_profiles.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    status: Mapped[str] = mapped_column(String(32), nullable=False, default="draft", index=True)
+    summary_text: Mapped[str | None] = mapped_column(Text)
+    summary_json: Mapped[dict] = mapped_column(JSONB, nullable=False, default=dict)
+    posts_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    period_from: Mapped[date | None] = mapped_column(Date, nullable=True)
+    period_to: Mapped[date | None] = mapped_column(Date, nullable=True)
+    html_path: Mapped[str | None] = mapped_column(Text, nullable=True)
+    approved_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+    profile: Mapped["CompetitorTelegramProfile"] = relationship("CompetitorTelegramProfile", back_populates="summaries")  # type: ignore[name-defined]
+
+
 class ParsedIndicator(Base, UUIDPrimaryKeyMixin):
     __tablename__ = "parsed_indicators"
 

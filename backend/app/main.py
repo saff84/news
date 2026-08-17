@@ -37,6 +37,10 @@ def create_app() -> FastAPI:
     indicator_media_dir.mkdir(parents=True, exist_ok=True)
     app.mount("/indicator-media", StaticFiles(directory=str(indicator_media_dir)), name="indicator_media")
 
+    competitor_summaries_dir = Path(settings.storage_dir) / "competitor_summaries"
+    competitor_summaries_dir.mkdir(parents=True, exist_ok=True)
+    app.mount("/competitor-summaries", StaticFiles(directory=str(competitor_summaries_dir), html=True), name="competitor_summaries")
+
     app.include_router(api_router)
     return app
 

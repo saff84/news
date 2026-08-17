@@ -7,6 +7,7 @@ from app.api import (
     ai_config,
     auth,
     competitors,
+    competitor_telegram,
     developers,
     diagnostics,
     health,
@@ -36,6 +37,7 @@ api_router.include_router(news.router)
 api_router.include_router(templates.router)
 api_router.include_router(monitoring.router)
 api_router.include_router(competitors.router)
+api_router.include_router(competitor_telegram.router)
 api_router.include_router(developers.router)
 api_router.include_router(parsing_templates.router)
 api_router.include_router(sources.router)

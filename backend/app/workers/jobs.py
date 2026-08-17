@@ -9,7 +9,7 @@ from sqlalchemy.orm import Session
 from telethon.errors import FloodWaitError
 
 from app.db import SessionLocal
-from app.models.domain import MaxChannelState, RssState, Source, SourceType, TgChannelState, VkGroupState
+from app.models.domain import MaxChannelState, RssState, Source, SourceType, TgChannelState, VkGroupState, CompetitorTelegramProfile
 from app.parsers.html_ingestor import ingest_html
 from app.parsers.max_ingestor import ingest_max_channel
 from app.parsers.rss_ingestor import ingest_rss
@@ -185,6 +185,32 @@ def rebuild_news_clusters_job(
     db: Session = SessionLocal()
     try:
         return rebuild_news_clusters(db, days=days, threshold=threshold, max_items=max_items)
+    finally:
+        db.close()
+
+
+def competitor_tg_collect_job(profile_id: str, reset_history: bool = False) -> dict:
+    """RQ: сбор постов TG-канала конкурента; при незавершённом backfill ставит следующий батч."""
+    from app.parsers.competitor_telegram_ingestor import ingest_competitor_telegram
+    from app.workers.queue import get_queue
+
+    pid = uuid.UUID(profile_id)
+    db: Session = SessionLocal()
+    try:
+        profile = db.get(CompetitorTelegramProfile, pid)
+        if not profile:
+            return {"status": "missing", "profile_id": profile_id}
+        result = ingest_competitor_telegram(db, profile, reset_history=reset_history)
+        db.refresh(profile)
+        if result.get("status") == "ok" and not profile.backfill_complete:
+            get_queue("default").enqueue(
+                competitor_tg_collect_job,
+                profile_id,
+                False,
+                job_timeout=900,
+            )
+            result["queued_next_batch"] = True
+        return result
     finally:
         db.close()
 

@@ -14,6 +14,7 @@ type AIConfig = {
   ai_retry_base_seconds: number;
   prompt_news: string;
   prompt_competitors: string;
+  prompt_competitor_tg: string;
   prompt_developers: string;
   prompt_indicators: string;
   prompt_regions: string;
@@ -43,7 +44,7 @@ const ROUTERAI_MODELS = [
   { id: "deepseek/deepseek-chat", label: "DeepSeek Chat" },
 ];
 
-const PROMPT_KEYS = ["prompt_news", "prompt_competitors", "prompt_developers", "prompt_indicators", "prompt_regions", "prompt_clusters"] as const;
+const PROMPT_KEYS = ["prompt_news", "prompt_competitors", "prompt_competitor_tg", "prompt_developers", "prompt_indicators", "prompt_regions", "prompt_clusters"] as const;
 
 const PROMPT_LABELS: Record<(typeof PROMPT_KEYS)[number], { label: string; hint: string }> = {
   prompt_news: {
@@ -53,6 +54,10 @@ const PROMPT_LABELS: Record<(typeof PROMPT_KEYS)[number], { label: string; hint:
   prompt_competitors: {
     label: "Новости конкурентов",
     hint: "Промпт для выдержки по новостям конкурентов: какие новинки представили, что происходило в компании. Данные приходят с пометкой [Название компании].",
+  },
+  prompt_competitor_tg: {
+    label: "TG-архив конкурентов",
+    hint: "Промпт для длинного саммари по спарсенным постам Telegram-канала конкурента (раздел «TG-анализ конкурентов», до 24 мес.).",
   },
   prompt_developers: {
     label: "Застройщики",
@@ -90,6 +95,7 @@ export function AIConfigPage() {
     ai_retry_base_seconds: 5,
     prompt_news: "",
     prompt_competitors: "",
+    prompt_competitor_tg: "",
     prompt_developers: "",
     prompt_indicators: "",
     prompt_regions: "",
@@ -129,6 +135,7 @@ export function AIConfigPage() {
         ai_retry_base_seconds: c.ai_retry_base_seconds ?? 5,
         prompt_news: c.prompt_news ?? "",
         prompt_competitors: c.prompt_competitors ?? "",
+        prompt_competitor_tg: c.prompt_competitor_tg ?? "",
         prompt_developers: c.prompt_developers ?? "",
         prompt_indicators: c.prompt_indicators ?? "",
         prompt_regions: c.prompt_regions ?? "",
@@ -159,6 +166,7 @@ export function AIConfigPage() {
         ai_retry_base_seconds: form.ai_retry_base_seconds,
         prompt_news: form.prompt_news,
         prompt_competitors: form.prompt_competitors,
+        prompt_competitor_tg: form.prompt_competitor_tg,
         prompt_developers: form.prompt_developers,
         prompt_indicators: form.prompt_indicators,
         prompt_regions: form.prompt_regions,

@@ -26,6 +26,7 @@ class AIConfigOut(BaseModel):
     ai_retry_base_seconds: float
     prompt_news: str
     prompt_competitors: str
+    prompt_competitor_tg: str
     prompt_developers: str
     prompt_indicators: str
     prompt_regions: str
@@ -41,6 +42,7 @@ class AIConfigUpdateIn(BaseModel):
     ai_retry_base_seconds: float | None = Field(default=None, ge=1, le=300)
     prompt_news: str | None = Field(default=None, max_length=10000)
     prompt_competitors: str | None = Field(default=None, max_length=10000)
+    prompt_competitor_tg: str | None = Field(default=None, max_length=10000)
     prompt_developers: str | None = Field(default=None, max_length=10000)
     prompt_indicators: str | None = Field(default=None, max_length=10000)
     prompt_regions: str | None = Field(default=None, max_length=10000)
@@ -59,6 +61,7 @@ def _to_out(cfg: dict[str, Any]) -> AIConfigOut:
         "ai_retry_base_seconds": 5.0,
         "prompt_news": "",
         "prompt_competitors": "",
+        "prompt_competitor_tg": "",
         "prompt_developers": "",
         "prompt_indicators": "",
         "prompt_regions": "",

@@ -18,6 +18,7 @@ import { VkParserPage } from "./pages/VkParserPage";
 import { NewsPage } from "./pages/NewsPage";
 import { NewsFilterPage } from "./pages/NewsFilterPage";
 import { ReportConfigPage } from "./pages/ReportConfigPage";
+import { CompetitorTelegramPage } from "./pages/CompetitorTelegramPage";
 import { AIConfigPage } from "./pages/AIConfigPage";
 
 function MenuLink({
@@ -58,6 +59,11 @@ function SidebarNav({ variant }: { variant?: "static" | "dialog" }) {
       {wrap(
         <MenuLink to="/regions" icon={<Map className="h-4 w-4" />}>
           Регионы
+        </MenuLink>,
+      )}
+      {wrap(
+        <MenuLink to="/competitor-telegram" icon={<MessageSquare className="h-4 w-4" />}>
+          TG-анализ конкурентов
         </MenuLink>,
       )}
       {wrap(
@@ -143,6 +149,7 @@ function Shell({ children }: { children: React.ReactNode }) {
   const loc = useLocation();
   const title = (() => {
     if (loc.pathname.startsWith("/regions")) return "Регионы";
+    if (loc.pathname.startsWith("/competitor-telegram")) return "TG-анализ конкурентов";
     if (loc.pathname.startsWith("/competitors")) return "Конкуренты";
     if (loc.pathname.startsWith("/developers")) return "Застройщики";
     if (loc.pathname.startsWith("/sources")) return "Источники";
@@ -253,6 +260,16 @@ export function App() {
           <RequireAuth>
             <Shell>
               <RegionsPage />
+            </Shell>
+          </RequireAuth>
+        }
+      />
+      <Route
+        path="/competitor-telegram"
+        element={
+          <RequireAuth>
+            <Shell>
+              <CompetitorTelegramPage />
             </Shell>
           </RequireAuth>
         }

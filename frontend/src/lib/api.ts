@@ -50,6 +50,51 @@ export type CompetitorOut = {
   updated_at: string;
 };
 
+export type CompetitorTelegramProfileOut = {
+  id: string;
+  competitor_id: string;
+  competitor_name: string;
+  tg_channel_username: string;
+  include_keywords: string[];
+  exclude_keywords: string[];
+  match_whole_words: boolean;
+  backfill_until_date: string | null;
+  last_message_id: number;
+  backfill_complete: boolean;
+  last_fetch_at: string | null;
+  last_error: string | null;
+  is_active: boolean;
+  posts_count: number;
+  summary_status: string | null;
+  summary_html_path: string | null;
+  created_at: string;
+  updated_at: string;
+};
+
+export type CompetitorTelegramPostOut = {
+  id: string;
+  message_id: number;
+  post_url: string;
+  text: string | null;
+  published_at: string | null;
+  created_at: string;
+};
+
+export type CompetitorTelegramSummaryOut = {
+  id: string;
+  profile_id: string;
+  status: string;
+  summary_text: string | null;
+  summary_json: Record<string, unknown>;
+  posts_count: number;
+  period_from: string | null;
+  period_to: string | null;
+  html_path: string | null;
+  approved_at: string | null;
+  created_at: string;
+  updated_at: string;
+};
+
 export type DeveloperOut = {
   id: string;
   name: string;
@@ -416,6 +461,75 @@ export const api = {
       request<CompetitorOut>(`/api/competitors/${id}`, { method: "PATCH", body: JSON.stringify(payload) }, accessToken),
     delete: (accessToken: string, id: string) =>
       request<void>(`/api/competitors/${id}`, { method: "DELETE" }, accessToken),
+  },
+  competitorTelegram: {
+    listProfiles: (accessToken: string) =>
+      request<{ items: CompetitorTelegramProfileOut[] }>("/api/competitor-telegram/profiles", { method: "GET" }, accessToken),
+    telegramStatus: (accessToken: string) =>
+      request<{
+        ready: boolean;
+        message: string | null;
+        credentials_configured: boolean;
+        session_configured: boolean;
+      }>("/api/competitor-telegram/telegram-status", { method: "GET" }, accessToken),
+    createProfile: (
+      accessToken: string,
+      payload: {
+        competitor_id: string;
+        tg_channel_username: string;
+        include_keywords?: string[];
+        exclude_keywords?: string[];
+        match_whole_words?: boolean;
+        backfill_until_date?: string | null;
+        is_active?: boolean;
+      },
+    ) =>
+      request<CompetitorTelegramProfileOut>("/api/competitor-telegram/profiles", { method: "POST", body: JSON.stringify(payload) }, accessToken),
+    updateProfile: (
+      accessToken: string,
+      id: string,
+      payload: Partial<{
+        tg_channel_username: string;
+        include_keywords: string[];
+        exclude_keywords: string[];
+        match_whole_words: boolean;
+        backfill_until_date: string | null;
+        is_active: boolean;
+      }>,
+    ) =>
+      request<CompetitorTelegramProfileOut>(`/api/competitor-telegram/profiles/${id}`, { method: "PATCH", body: JSON.stringify(payload) }, accessToken),
+    deleteProfile: (accessToken: string, id: string) =>
+      request<void>(`/api/competitor-telegram/profiles/${id}`, { method: "DELETE" }, accessToken),
+    listPosts: (accessToken: string, profileId: string, params?: { limit?: number; offset?: number }) => {
+      const qs = new URLSearchParams();
+      if (params?.limit != null) qs.set("limit", String(params.limit));
+      if (params?.offset != null) qs.set("offset", String(params.offset));
+      const q = qs.toString();
+      return request<{ items: CompetitorTelegramPostOut[]; total: number }>(
+        `/api/competitor-telegram/profiles/${profileId}/posts${q ? `?${q}` : ""}`,
+        { method: "GET" },
+        accessToken,
+      );
+    },
+    collect: (accessToken: string, profileId: string, params?: { reset_history?: boolean; sync?: boolean }) => {
+      const qs = new URLSearchParams();
+      if (params?.reset_history) qs.set("reset_history", "true");
+      if (params?.sync) qs.set("sync", "true");
+      const q = qs.toString();
+      return request<{ status: string; job_id?: string; inserted?: number; total_posts?: number; backfill_complete?: boolean }>(
+        `/api/competitor-telegram/profiles/${profileId}/collect${q ? `?${q}` : ""}`,
+        { method: "POST" },
+        accessToken,
+      );
+    },
+    summarize: (accessToken: string, profileId: string) =>
+      request<CompetitorTelegramSummaryOut>(`/api/competitor-telegram/profiles/${profileId}/summarize`, { method: "POST" }, accessToken),
+    getSummary: (accessToken: string, profileId: string) =>
+      request<CompetitorTelegramSummaryOut | null>(`/api/competitor-telegram/profiles/${profileId}/summary`, { method: "GET" }, accessToken),
+    approveSummary: (accessToken: string, profileId: string) =>
+      request<{ status: string; summary_id: string }>(`/api/competitor-telegram/profiles/${profileId}/approve-summary`, { method: "POST" }, accessToken),
+    purgePosts: (accessToken: string, profileId: string) =>
+      request<{ deleted_posts: number }>(`/api/competitor-telegram/profiles/${profileId}/purge-posts`, { method: "POST" }, accessToken),
   },
   developers: {
     list: (accessToken: string, q?: string) => {
@@ -824,6 +938,7 @@ export const api = {
         ai_retry_base_seconds: number;
         prompt_news: string;
         prompt_competitors: string;
+        prompt_competitor_tg: string;
         prompt_developers: string;
         prompt_indicators: string;
         prompt_regions: string;
@@ -840,6 +955,7 @@ export const api = {
         ai_retry_base_seconds: number;
         prompt_news: string;
         prompt_competitors: string;
+        prompt_competitor_tg: string;
         prompt_developers: string;
         prompt_indicators: string;
         prompt_regions: string;
@@ -855,6 +971,7 @@ export const api = {
         ai_retry_base_seconds: number;
         prompt_news: string;
         prompt_competitors: string;
+        prompt_competitor_tg: string;
         prompt_developers: string;
         prompt_indicators: string;
         prompt_regions: string;
