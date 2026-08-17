@@ -14,13 +14,57 @@ from app.models.domain import Competitor, CompetitorTelegramPost, CompetitorTele
 from app.services.ai_config import get_ai_config
 from app.services.ai_runtime import pause_before_ai_call, runtime_from_config
 from app.services.report_generator import AI_NEWS_DATA_BUDGET_CHARS, _process_ai_report_section
-from app.services.report_section_render import render_section_inner_html
+from app.services.report_section_render import (
+    merge_report_section_payloads,
+    render_section_inner_html,
+    sanitize_section_dict,
+    section_dict_to_markdown,
+    try_parse_report_section,
+)
 
 AI_BUDGET = AI_NEWS_DATA_BUDGET_CHARS
+POST_TITLE_CHARS = 200
+DEFAULT_SNIPPET_CHARS = 900
+
+# Всегда дописывается к промпту из настроек — нельзя переопределить через UI.
+_PROMPT_PRODUCT_GUARD = """
+КРИТИЧНО — сохранность продуктового контента:
+- ЗАПРЕЩЕНО опускать, обобщать до потери смысла или «фильтровать как второстепенное» новинки ассортимента, новые лоты, очереди/корпуса, планировки, метражи, цены, старт продаж и акции.
+- Если такие факты есть во входных «Данные», каждый из них должен быть явно отражён в bullets/subsections с датой или ссылкой на пост.
+- Не сокращай саммари за счёт продуктовых анонсов ради «общей картины» — продукт и ассортимент приоритетны наравне с PR и финансами."""
 
 
-def _serialize_posts_batch(posts: list[CompetitorTelegramPost], *, subject: str, header_lines: list[str] | None = None) -> str:
+def _post_date_range(batch: list[CompetitorTelegramPost]) -> tuple[str, str]:
+    dates = [p.published_at for p in batch if p.published_at]
+    if not dates:
+        return "—", "—"
+    return min(dates).strftime("%Y-%m-%d"), max(dates).strftime("%Y-%m-%d")
+
+
+def _batch_header_lines(
+    *,
+    batch_index: int,
+    batch_total: int,
+    batch: list[CompetitorTelegramPost],
+    total_posts: int,
+) -> list[str]:
+    d0, d1 = _post_date_range(batch)
+    return [
+        f"Часть {batch_index} из {batch_total}. Постов в части: {len(batch)}. Период части: {d0} — {d1}.",
+        f"Всего постов в архиве: {total_posts}.",
+        "Обязательно отрази запуски проектов, новинки ассортимента, планировки, цены и акции — если они есть в этой части.",
+    ]
+
+
+def _serialize_posts_batch(
+    posts: list[CompetitorTelegramPost],
+    *,
+    subject: str,
+    header_lines: list[str] | None = None,
+    snippet_chars: int = DEFAULT_SNIPPET_CHARS,
+) -> tuple[str, int]:
     lines: list[str] = list(header_lines or [])
+    truncated = 0
     if subject:
         if lines:
             lines.append("")
@@ -33,38 +77,110 @@ def _serialize_posts_batch(posts: list[CompetitorTelegramPost], *, subject: str,
         )
     for p in posts:
         pub = p.published_at.strftime("%Y-%m-%d") if p.published_at else "—"
-        title = ((p.text or "Пост")[:120]).replace("\n", " ").strip()
+        raw = (p.text or "Пост").strip()
+        title = raw[:POST_TITLE_CHARS].replace("\n", " ").strip()
+        if len(raw) > POST_TITLE_CHARS:
+            title = title.rstrip() + "…"
         url = (p.post_url or "").strip()
         link = f"[{title}]({url})" if url else title
         lines.append(f"- {pub} | {link}")
-        if p.text and len(p.text) > 120:
-            sn = p.text[:400] + ("…" if len(p.text) > 400 else "")
-            lines.append(f"  {sn.replace(chr(10), ' ')}")
-    return "\n".join(lines) if lines else "(нет постов)"
+        if raw and len(raw) > POST_TITLE_CHARS:
+            if snippet_chars > 0:
+                if len(raw) > snippet_chars:
+                    truncated += 1
+                body = raw[:snippet_chars] + ("…" if len(raw) > snippet_chars else "")
+            else:
+                body = raw
+            lines.append(f"  {body.replace(chr(10), ' ')}")
+    return "\n".join(lines) if lines else "(нет постов)", truncated
 
 
-def _split_posts_for_ai(posts: list[CompetitorTelegramPost], max_chars: int) -> list[list[CompetitorTelegramPost]]:
+def _split_posts_for_ai(
+    posts: list[CompetitorTelegramPost],
+    max_chars: int,
+    *,
+    snippet_chars: int = DEFAULT_SNIPPET_CHARS,
+) -> list[list[CompetitorTelegramPost]]:
     if not posts:
         return []
     sorted_posts = sorted(
         posts,
         key=lambda p: p.published_at or dt.datetime.min.replace(tzinfo=dt.timezone.utc),
-        reverse=True,
+        reverse=False,
     )
+    header_reserve = 420
     batches: list[list[CompetitorTelegramPost]] = []
     current: list[CompetitorTelegramPost] = []
-    header_reserve = 280
     for post in sorted_posts:
         trial = current + [post]
-        text = _serialize_posts_batch(trial, subject="")
+        text, _ = _serialize_posts_batch(trial, subject="", snippet_chars=snippet_chars)
         if len(text) + header_reserve > max_chars and current:
             batches.append(current)
             current = [post]
-        else:
-            current = trial
+            continue
+        if len(text) + header_reserve > max_chars:
+            compact, _ = _serialize_posts_batch([post], subject="", snippet_chars=0)
+            if len(compact) + header_reserve > max_chars and current:
+                batches.append(current)
+                current = [post]
+            else:
+                current = [post]
+            continue
+        current = trial
     if current:
         batches.append(current)
     return batches if batches else [sorted_posts]
+
+
+def _merge_competitor_tg_batch_payloads(
+    batch_results: list[tuple[str, dict[str, Any]]],
+) -> dict[str, Any]:
+    """Объединить JSON-саммари по хронологическим частям архива."""
+    clean_pairs = [
+        (label, sanitize_section_dict(payload))
+        for label, payload in batch_results
+        if isinstance(payload, dict) and payload
+    ]
+    if not clean_pairs:
+        return {}
+    if len(clean_pairs) == 1:
+        return clean_pairs[0][1]
+
+    payloads_only = [p for _, p in clean_pairs]
+    merged_flat = merge_report_section_payloads(payloads_only)
+
+    subsections: list[dict[str, Any]] = []
+    for label, payload in clean_pairs:
+        bullets = list(payload.get("bullets") or [])
+        paragraphs = list(payload.get("paragraphs") or [])
+        for sub in payload.get("subsections") or []:
+            if not isinstance(sub, dict):
+                continue
+            sub_bullets = list(sub.get("bullets") or [])
+            sub_paragraphs = list(sub.get("paragraphs") or [])
+            if sub_bullets or sub_paragraphs:
+                sub_title = str(sub.get("title") or label).strip() or label
+                subsections.append(
+                    {"title": sub_title, "paragraphs": sub_paragraphs, "bullets": sub_bullets}
+                )
+        if bullets or paragraphs:
+            subsections.append({"title": label, "paragraphs": paragraphs, "bullets": bullets})
+
+    first = clean_pairs[0][1]
+    last = clean_pairs[-1][1]
+    out: dict[str, Any] = {
+        "headline": merged_flat.get("headline") or first.get("headline"),
+        "lead": merged_flat.get("lead") or first.get("lead"),
+        "closing": merged_flat.get("closing") or last.get("closing"),
+    }
+    if subsections:
+        out["subsections"] = subsections
+        out["paragraphs"] = []
+        out["bullets"] = []
+    else:
+        out["paragraphs"] = merged_flat.get("paragraphs") or []
+        out["bullets"] = merged_flat.get("bullets") or []
+    return out
 
 
 def _summary_html(
@@ -75,10 +191,12 @@ def _summary_html(
     period_to: dt.date | None,
     posts_count: int,
     inner_html: str,
+    meta_note: str | None = None,
 ) -> str:
     pf = period_from.strftime("%d.%m.%Y") if period_from else "—"
     pt = period_to.strftime("%d.%m.%Y") if period_to else "—"
     generated = dt.datetime.now(dt.timezone.utc).strftime("%d.%m.%Y %H:%M UTC")
+    meta_extra = f"<br/>{escape(meta_note)}" if meta_note else ""
     return f"""<!DOCTYPE html>
 <html lang="ru">
 <head>
@@ -104,7 +222,7 @@ h1 {{ font-size: 1.75rem; margin: 0 0 0.5rem; }}
 <h1>{escape(competitor_name)}</h1>
 <p class="meta">Telegram: @{escape(channel)}<br/>
 Период: {pf} — {pt}<br/>
-Постов в анализе: {posts_count}<br/>
+Постов в анализе: {posts_count}{meta_extra}<br/>
 Сгенерировано: {generated}</p>
 </header>
 <section class="card">{inner_html}</section>
@@ -135,22 +253,37 @@ def generate_competitor_summary(db: Session, profile: CompetitorTelegramProfile)
 
     ai_cfg = get_ai_config(db)
     runtime = runtime_from_config(ai_cfg)
-    prompt = (ai_cfg.get("prompt_competitor_tg") or ai_cfg.get("prompt_competitors") or "").strip()
-    if not prompt:
+    prompt_base = (ai_cfg.get("prompt_competitor_tg") or ai_cfg.get("prompt_competitors") or "").strip()
+    if not prompt_base:
         raise ValueError("Промпт prompt_competitor_tg не настроен в «Подключение ИИ»")
+    prompt = f"{prompt_base.rstrip()}\n{_PROMPT_PRODUCT_GUARD}"
     if not runtime.api_key:
         raise ValueError("API-ключ ИИ не настроен")
 
     cname = competitor.name or str(competitor.id)
-    batches = _split_posts_for_ai(posts, AI_BUDGET)
-    combined_text = ""
-    combined_json: dict[str, Any] | None = None
+    batches = _split_posts_for_ai(posts, AI_BUDGET, snippet_chars=DEFAULT_SNIPPET_CHARS)
+    batch_results: list[tuple[str, dict[str, Any]]] = []
+    fallback_texts: list[str] = []
+    total_truncated = 0
+    chars_sent = 0
 
     for bi, batch in enumerate(batches, 1):
-        header = []
-        if len(batches) > 1:
-            header = [f"Часть {bi} из {len(batches)}. Постов в части: {len(batch)}."]
-        data = _serialize_posts_batch(batch, subject=cname, header_lines=header)
+        header = (
+            _batch_header_lines(
+                batch_index=bi,
+                batch_total=len(batches),
+                batch=batch,
+                total_posts=len(posts),
+            )
+            if len(batches) > 1
+            else None
+        )
+        data, truncated = _serialize_posts_batch(batch, subject=cname, header_lines=header)
+        total_truncated += truncated
+        if len(data) > AI_BUDGET:
+            data = data[: AI_BUDGET - 40] + "\n\n[... обрезано по лимиту контекста ...]"
+        chars_sent += len(data)
+
         pause_before_ai_call(runtime.request_delay_seconds, label=f"competitor-tg:{cname}:{bi}")
         text, payload = _process_ai_report_section(
             provider=runtime.provider,
@@ -162,17 +295,21 @@ def generate_competitor_summary(db: Session, profile: CompetitorTelegramProfile)
             max_retries=runtime.max_retries,
             retry_base_seconds=runtime.retry_base_seconds,
         )
-        if len(batches) == 1:
-            combined_text = text
-            combined_json = payload
-        elif payload:
-            if combined_json is None:
-                combined_json = payload
-            else:
-                for key in ("bullets", "paragraphs", "subsections"):
-                    if payload.get(key):
-                        combined_json.setdefault(key, [])
-                        combined_json[key].extend(payload[key])
+        if payload is None and text and not str(text).startswith("[Ошибка ИИ"):
+            payload = try_parse_report_section(text)
+        if payload:
+            d0, d1 = _post_date_range(batch)
+            label = f"{d0} — {d1}" if len(batches) > 1 else (payload.get("headline") or cname)
+            batch_results.append((str(label), payload))
+        if text:
+            fallback_texts.append(text)
+
+    if batch_results:
+        combined_json = _merge_competitor_tg_batch_payloads(batch_results)
+        combined_text = section_dict_to_markdown(combined_json)
+    else:
+        combined_json = {}
+        combined_text = "\n\n".join(t for t in fallback_texts if t)
 
     period_from = None
     period_to = None
@@ -181,9 +318,16 @@ def generate_competitor_summary(db: Session, profile: CompetitorTelegramProfile)
         period_from = min(dates)
         period_to = max(dates)
 
-    inner = render_section_inner_html(text=combined_text, payload=combined_json)
+    inner = render_section_inner_html(text=combined_text, payload=combined_json or None)
     if not inner:
         inner = f"<div class='summary rich'><p>{escape(combined_text or 'Пустой ответ ИИ')}</p></div>"
+
+    meta_parts: list[str] = []
+    if len(batches) > 1:
+        meta_parts.append(f"Частей для ИИ: {len(batches)}")
+    if total_truncated:
+        meta_parts.append(f"Постов с усечённым текстом: {total_truncated} (до {DEFAULT_SNIPPET_CHARS} симв.)")
+    meta_note = ". ".join(meta_parts) if meta_parts else None
 
     html = _summary_html(
         competitor_name=cname,
@@ -192,11 +336,21 @@ def generate_competitor_summary(db: Session, profile: CompetitorTelegramProfile)
         period_to=period_to,
         posts_count=len(posts),
         inner_html=inner,
+        meta_note=meta_note,
     )
     filename = f"{profile.id}.html"
     path = _storage_dir() / filename
     path.write_text(html, encoding="utf-8")
     html_url = f"/competitor-summaries/{filename}"
+
+    summary_payload = dict(combined_json or {})
+    summary_payload["_meta"] = {
+        "posts_count": len(posts),
+        "batches_count": len(batches),
+        "posts_text_truncated": total_truncated,
+        "snippet_chars": DEFAULT_SNIPPET_CHARS,
+        "chars_sent_to_ai": chars_sent,
+    }
 
     summary = (
         db.query(CompetitorTelegramSummary)
@@ -210,7 +364,7 @@ def generate_competitor_summary(db: Session, profile: CompetitorTelegramProfile)
 
     summary.status = "ready"
     summary.summary_text = combined_text
-    summary.summary_json = combined_json or {}
+    summary.summary_json = summary_payload
     summary.posts_count = len(posts)
     summary.period_from = period_from
     summary.period_to = period_to

@@ -253,7 +253,7 @@ def delete_profile(
 @router.get("/profiles/{profile_id}/posts")
 def list_posts(
     profile_id: uuid.UUID,
-    limit: int = Query(default=50, ge=1, le=200),
+    limit: int = Query(default=500, ge=1, le=5000),
     offset: int = Query(default=0, ge=0),
     db: Session = Depends(get_db),
     user: User = Depends(require_role(Role.ADMIN, Role.ANALYST, Role.VIEWER)),

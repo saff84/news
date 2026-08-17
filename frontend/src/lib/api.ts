@@ -511,6 +511,24 @@ export const api = {
         accessToken,
       );
     },
+    listAllPosts: async (accessToken: string, profileId: string) => {
+      const pageSize = 500;
+      const items: CompetitorTelegramPostOut[] = [];
+      let offset = 0;
+      let total = 0;
+      for (;;) {
+        const page = await request<{ items: CompetitorTelegramPostOut[]; total: number }>(
+          `/api/competitor-telegram/profiles/${profileId}/posts?limit=${pageSize}&offset=${offset}`,
+          { method: "GET" },
+          accessToken,
+        );
+        total = page.total;
+        items.push(...page.items);
+        offset += page.items.length;
+        if (page.items.length === 0 || offset >= total) break;
+      }
+      return { items, total };
+    },
     collect: (accessToken: string, profileId: string, params?: { reset_history?: boolean; sync?: boolean }) => {
       const qs = new URLSearchParams();
       if (params?.reset_history) qs.set("reset_history", "true");

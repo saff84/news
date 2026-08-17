@@ -96,6 +96,7 @@ export function CompetitorTelegramPage() {
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [posts, setPosts] = useState<CompetitorTelegramPostOut[]>([]);
   const [postsTotal, setPostsTotal] = useState(0);
+  const [postsLoading, setPostsLoading] = useState(false);
   const [summary, setSummary] = useState<CompetitorTelegramSummaryOut | null>(null);
   const [busy, setBusy] = useState<string | null>(null);
   const [tgStatus, setTgStatus] = useState<{
@@ -141,9 +142,10 @@ export function CompetitorTelegramPage() {
       setSummary(null);
       return;
     }
+    setPostsLoading(true);
     try {
       const [postsRes, summaryRes] = await Promise.all([
-        api.competitorTelegram.listPosts(accessToken, selectedId, { limit: 30 }),
+        api.competitorTelegram.listAllPosts(accessToken, selectedId),
         api.competitorTelegram.getSummary(accessToken, selectedId),
       ]);
       setPosts(postsRes.items);
@@ -151,6 +153,8 @@ export function CompetitorTelegramPage() {
       setSummary(summaryRes);
     } catch (e: unknown) {
       push({ variant: "error", title: "TG-анализ", description: e instanceof Error ? e.message : "Ошибка загрузки деталей" });
+    } finally {
+      setPostsLoading(false);
     }
   }, [accessToken, selectedId, push]);
 
@@ -464,38 +468,47 @@ export function CompetitorTelegramPage() {
 
               <div className="overflow-x-auto rounded border bg-white">
                 <div className="border-b bg-slate-50 px-3 py-2 text-sm font-medium text-slate-700">
-                  Посты ({postsTotal})
+                  Посты ({posts.length}{postsTotal !== posts.length ? ` / ${postsTotal}` : ""})
+                  {postsLoading ? <span className="ml-2 font-normal text-slate-500">загрузка…</span> : null}
                 </div>
-                <table className="min-w-full text-left text-sm">
-                  <thead className="bg-slate-50 text-slate-700">
-                    <tr>
-                      <th className="px-3 py-2">Дата</th>
-                      <th className="px-3 py-2">Текст</th>
-                      <th className="px-3 py-2"></th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {posts.length === 0 ? (
+                <div className="max-h-[min(70vh,720px)] overflow-y-auto">
+                  <table className="min-w-full text-left text-sm">
+                    <thead className="sticky top-0 z-10 bg-slate-50 text-slate-700">
                       <tr>
-                        <td colSpan={3} className="px-3 py-4 text-slate-600">
-                          Нет постов. Запустите сбор.
-                        </td>
+                        <th className="px-3 py-2">Дата</th>
+                        <th className="px-3 py-2">Текст</th>
+                        <th className="px-3 py-2"></th>
                       </tr>
-                    ) : (
-                      posts.map((post) => (
-                        <tr key={post.id} className="border-t align-top">
-                          <td className="whitespace-nowrap px-3 py-2 text-slate-600">{formatDateTime(post.published_at)}</td>
-                          <td className="max-w-xl px-3 py-2">{(post.text || "").slice(0, 240)}{(post.text || "").length > 240 ? "…" : ""}</td>
-                          <td className="px-3 py-2">
-                            <a className="text-blue-600 hover:underline" href={post.post_url} target="_blank" rel="noreferrer">
-                              TG
-                            </a>
+                    </thead>
+                    <tbody>
+                      {postsLoading && posts.length === 0 ? (
+                        <tr>
+                          <td colSpan={3} className="px-3 py-4 text-slate-600">
+                            Загрузка постов…
                           </td>
                         </tr>
-                      ))
-                    )}
-                  </tbody>
-                </table>
+                      ) : posts.length === 0 ? (
+                        <tr>
+                          <td colSpan={3} className="px-3 py-4 text-slate-600">
+                            Нет постов. Запустите сбор.
+                          </td>
+                        </tr>
+                      ) : (
+                        posts.map((post) => (
+                          <tr key={post.id} className="border-t align-top">
+                            <td className="whitespace-nowrap px-3 py-2 text-slate-600">{formatDateTime(post.published_at)}</td>
+                            <td className="max-w-3xl whitespace-pre-wrap px-3 py-2 text-slate-800">{post.text || "—"}</td>
+                            <td className="px-3 py-2">
+                              <a className="text-blue-600 hover:underline" href={post.post_url} target="_blank" rel="noreferrer">
+                                TG
+                              </a>
+                            </td>
+                          </tr>
+                        ))
+                      )}
+                    </tbody>
+                  </table>
+                </div>
               </div>
             </>
           )}
