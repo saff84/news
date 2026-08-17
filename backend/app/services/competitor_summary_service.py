@@ -31,41 +31,35 @@ DEFAULT_SNIPPET_CHARS = 900
 # Всегда дописывается к промпту из настроек — нельзя переопределить через UI.
 _PROMPT_PRODUCT_GUARD = """
 КРИТИЧНО — сохранность продуктового контента:
-- ЗАПРЕЩЕНО опускать, обобщать до потери смысла или «фильтровать как второстепенное» новинки ассортимента, новые лоты, очереди/корпуса, планировки, метражи, цены, старт продаж и акции.
-- Если такие факты есть во входных «Данные», каждый из них должен быть явно отражён в bullets/subsections с датой или ссылкой на пост.
-- Не сокращай саммари за счёт продуктовых анонсов ради «общей картины» — продукт и ассортимент приоритетны наравне с PR и финансами."""
+- ЗАПРЕЩЕНО заменять перечень новинок и акций общими фразами («расширил ассортимент», «проводил акции»).
+- bullets в «Продукт и ассортимент» и «Маркетинг и продажи» — полный перечень конкретики из черновика (артикулы, акции, ссылки).
+- paragraphs — аналитика; bullets — факты. Не выбрасывай факты ради краткости."""
 
 _PROMPT_BATCH_EXTRACT = """
 Режим: промежуточная выжимка части архива (не финальный отчёт для руководства).
 - Сгруппируй факты по темам (продукт, маркетинг, компания, риски), а не по датам.
 - НЕ делай хронологический перечень «DD.MM — событие».
-- Сохрани все продуктовые анонсы и артикулы из данных.
-JSON: subsections с title, paragraphs (кратко) и bullets с citations."""
+- Каждая новинка, артикул, акция, цена — отдельный bullet с citations.
+JSON: subsections с title, paragraphs (1–2 предложения контекста) и bullets (все факты с citations)."""
 
 _PROMPT_SYNTHESIS = """Ты — стратегический аналитик конкурентной среды в девелопменте и строительной отрасли.
 На входе — черновая выжимка по постам Telegram-канала одного конкурента за длительный период.
-Переработай её в РАЗВЁРНУТУЮ аналитическую справку для руководства (ориентир: 1200–2500 слов).
+Собери ИТОГОВУЮ справку: аналитика + полный перечень фактов.
+
+Формат subsection: paragraphs (анализ, 2–3 абзаца) + bullets (ВСЕ факты из черновика по теме, с citations).
 
 ЗАПРЕЩЕНО:
-- хронологический журнал событий («17.08 — X, 24.08 — Y»);
-- подразделы с заголовками-датами («2024-08-17 — 2025-12-24») — только тематические названия;
-- однострочные bullets без предшествующей аналитики;
-- выбрасывать новинки ассортимента и продуктовые анонсы из черновика;
-- ответ короче 900 слов.
+- только общие слова («расширил линейку», «участвовал в выставках») без перечня;
+- подразделы с заголовками-датами; хронологический журнал;
+- выбрасывать bullets из черновика.
 
 ОБЯЗАТЕЛЬНО:
-1) lead — минимум 5–7 предложений: стратегическая картина, позиционирование, динамика периода.
-2) subsections (4–6 тем, где есть факты):
-   • «Продукт и ассортимент»
-   • «Маркетинг и продажи»
-   • «Развитие компании и география»
-   • «Репутация и риски» (если есть факты)
-   • «Динамика и тренды»
-   В КАЖДОМ разделе: paragraphs — минимум 2 абзаца по 3–5 предложений (анализ, не перечень);
-   bullets — конкретные факты, артикулы, акции с citations из черновика.
-3) closing — 3–4 предложения: главный вывод + что мониторить + сигнал для нас (нейтрально/давление/возможность).
+1) lead — 4–6 предложений.
+2) subsections: «Продукт и ассортимент», «Маркетинг и продажи», «Развитие компании и география», «Репутация и риски», «Динамика и тренды» — по наличию фактов.
+   В каждом: paragraphs (анализ) + bullets (каждая новинка/акция/событие отдельным пунктом).
+3) closing — вывод + мониторинг + сигнал для нас.
 
-Ограничения: только факты из черновика; не выдумывай; русский, деловой стиль."""
+Ограничения: только факты из черновика; citations с url из черновика; русский, деловой стиль."""
 
 _DATE_RANGE_TITLE = re.compile(r"\d{4}-\d{2}-\d{2}\s*[—\-–]\s*\d{4}-\d{2}-\d{2}")
 
@@ -74,16 +68,93 @@ _AI_LINK_HINT = (
 )
 
 _PROMPT_SYNTHESIS_RETRY = """
-ПРЕДЫДУЩИЙ ОТВЕТ ОТКЛОНЁН: слишком краткий и/или структура по датам вместо тем.
-Сделай заново: lead ≥ 6 предложений; 4–5 subsections с тематическими title; в каждом ≥ 2 paragraphs по 4 предложения + bullets с фактами.
+ПРЕДЫДУЩИЙ ОТВЕТ ОТКЛОНЁН: слишком общий (нет перечня новинок/акций) и/или мало bullets.
+Сделай заново: paragraphs — аналитика; bullets — ВСЕ факты из черновика с citations.
 """
 
 
-def _is_analytical_payload(d: dict[str, Any]) -> bool:
+def _collect_bullets_from_payload(d: dict[str, Any]) -> list[dict[str, Any]]:
+    out: list[dict[str, Any]] = []
+    for b in d.get("bullets") or []:
+        if isinstance(b, dict) and str(b.get("text") or "").strip():
+            out.append(b)
+    for sub in d.get("subsections") or []:
+        if isinstance(sub, dict):
+            out.extend(_collect_bullets_from_payload(sub))
+    return out
+
+
+def _bullet_match_keys(b: dict[str, Any]) -> set[str]:
+    keys: set[str] = set()
+    text = str(b.get("text") or "").lower()[:160]
+    if text:
+        keys.add(f"t:{text}")
+    for c in b.get("citations") or []:
+        if isinstance(c, dict):
+            url = (c.get("url") or "").strip()
+            if url:
+                keys.add(f"u:{url}")
+    return keys
+
+
+def _bullet_already_present(synth_bullets: list[dict[str, Any]], draft_bullet: dict[str, Any]) -> bool:
+    draft_keys = _bullet_match_keys(draft_bullet)
+    if not draft_keys:
+        return False
+    for sb in synth_bullets:
+        if _bullet_match_keys(sb) & draft_keys:
+            return True
+    return False
+
+
+def _classify_bullet_section(text: str) -> str:
+    t = text.lower()
+    marketing = ("акци", "скид", "распрод", "sale", "день монтаж", "мероприят", "выставк", "вебинар", "webinar", "промо")
+    company = ("склад", "регион", "партнёр", "партнер", "команда", "коллектив", "логист", "дилер", "представит")
+    reputation = ("суд", "риск", "претенз", "сертиф", "гарант", "стандарт", "gost", "гост")
+    if any(w in t for w in marketing):
+        return "Маркетинг и продажи"
+    if any(w in t for w in company):
+        return "Развитие компании и география"
+    if any(w in t for w in reputation):
+        return "Репутация и риски"
+    return "Продукт и ассортимент"
+
+
+def _ensure_subsection(payload: dict[str, Any], title: str) -> dict[str, Any]:
+    subs = payload.setdefault("subsections", [])
+    for sub in subs:
+        if isinstance(sub, dict) and str(sub.get("title") or "").strip() == title:
+            return sub
+    sub: dict[str, Any] = {"title": title, "paragraphs": [], "bullets": []}
+    subs.append(sub)
+    return sub
+
+
+def _enrich_synthesis_with_draft_facts(synth: dict[str, Any], drafts: list[dict[str, Any]]) -> tuple[dict[str, Any], int]:
+    """Добавить в синтез bullets из черновика, которые ИИ опустил."""
+    out = sanitize_section_dict(dict(synth))
+    draft_bullets: list[dict[str, Any]] = []
+    for d in drafts:
+        draft_bullets.extend(_collect_bullets_from_payload(sanitize_section_dict(d)))
+    synth_bullets = _collect_bullets_from_payload(out)
+    merged = 0
+    for b in draft_bullets:
+        if _bullet_already_present(synth_bullets, b):
+            continue
+        title = _classify_bullet_section(str(b.get("text") or ""))
+        sub = _ensure_subsection(out, title)
+        sub.setdefault("bullets", []).append(b)
+        synth_bullets.append(b)
+        merged += 1
+    return out, merged
+
+
+def _is_analytical_payload(d: dict[str, Any], *, min_bullets: int = 6) -> bool:
     if not d:
         return False
     subs = [s for s in (d.get("subsections") or []) if isinstance(s, dict)]
-    if len(subs) < 2:
+    if not subs:
         return False
     for sub in subs:
         if _DATE_RANGE_TITLE.search(str(sub.get("title") or "")):
@@ -91,7 +162,9 @@ def _is_analytical_payload(d: dict[str, Any]) -> bool:
     lead_len = len(str(d.get("lead") or ""))
     para_total = sum(len(str(p)) for sub in subs for p in (sub.get("paragraphs") or []))
     bullet_count = sum(len(sub.get("bullets") or []) for sub in subs)
-    return lead_len >= 250 and para_total >= 500 and bullet_count >= 4
+    has_analysis = lead_len >= 180 and para_total >= 200
+    has_facts = bullet_count >= min_bullets
+    return has_analysis and has_facts
 
 
 def _process_competitor_synthesis_ai(
@@ -458,8 +531,12 @@ def generate_competitor_summary(db: Session, profile: CompetitorTelegramProfile)
     pt = period_to.strftime("%d.%m.%Y") if period_to else "—"
     synthesis_pass = False
     synthesis_failed = False
+    facts_merged = 0
 
     if batch_results:
+        draft_payloads = [sanitize_section_dict(p) for _, p in batch_results if isinstance(p, dict) and p]
+        draft_bullet_count = sum(len(_collect_bullets_from_payload(d)) for d in draft_payloads)
+        min_bullets = max(6, draft_bullet_count // 3) if draft_bullet_count else 6
         draft_text = _draft_for_synthesis(batch_results)
         synthesis_data = (
             f"Конкурент: «{cname}»\n"
@@ -484,17 +561,14 @@ def generate_competitor_summary(db: Session, profile: CompetitorTelegramProfile)
                 max_retries=runtime.max_retries,
                 retry_base_seconds=runtime.retry_base_seconds,
             )
-            if synth_payload and _is_analytical_payload(synth_payload):
+            if synth_payload and _is_analytical_payload(synth_payload, min_bullets=min_bullets):
                 break
-        if synth_payload and _is_analytical_payload(synth_payload):
+        if synth_payload:
+            synth_payload, facts_merged = _enrich_synthesis_with_draft_facts(synth_payload, draft_payloads)
             combined_json = synth_payload
             combined_text = section_dict_to_markdown(synth_payload)
             synthesis_pass = True
-        elif synth_payload:
-            combined_json = synth_payload
-            combined_text = section_dict_to_markdown(synth_payload)
-            synthesis_pass = True
-            synthesis_failed = True
+            synthesis_failed = not _is_analytical_payload(synth_payload, min_bullets=min_bullets)
         elif synth_text and not str(synth_text).startswith("[Ошибка ИИ") and str(synth_text).strip():
             combined_text = str(synth_text).strip()
             combined_json = try_parse_report_section(combined_text) or {}
@@ -503,6 +577,9 @@ def generate_competitor_summary(db: Session, profile: CompetitorTelegramProfile)
         else:
             synthesis_failed = True
             combined_json = _merge_competitor_tg_batch_payloads(batch_results)
+            if combined_json:
+                combined_json, extra_merged = _enrich_synthesis_with_draft_facts(combined_json, draft_payloads)
+                facts_merged += extra_merged
             combined_text = section_dict_to_markdown(combined_json) if combined_json else "\n\n".join(fallback_texts)
     else:
         combined_json = {}
@@ -521,6 +598,8 @@ def generate_competitor_summary(db: Session, profile: CompetitorTelegramProfile)
         meta_parts.append("Синтез выполнен (сокращённый вариант)")
     elif synthesis_failed:
         meta_parts.append("Синтез не удался — показан черновик по частям")
+    if facts_merged:
+        meta_parts.append(f"Добавлено фактов из черновика: {facts_merged}")
     if total_truncated:
         meta_parts.append(f"Постов с усечённым текстом: {total_truncated} (до {DEFAULT_SNIPPET_CHARS} симв.)")
     meta_note = ". ".join(meta_parts) if meta_parts else None
@@ -548,6 +627,7 @@ def generate_competitor_summary(db: Session, profile: CompetitorTelegramProfile)
         "chars_sent_to_ai": chars_sent,
         "synthesis_pass": synthesis_pass,
         "synthesis_failed": synthesis_failed,
+        "facts_merged_from_draft": facts_merged,
     }
     render_payload = {k: v for k, v in summary_payload.items() if not str(k).startswith("_")}
     stored_text = section_dict_to_markdown(render_payload) if render_payload else combined_text
